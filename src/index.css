@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #07090e;
+    color: #f1f5f9;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0b0f19;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Subtle glow utilities */
+.glow-cyan {
+  box-shadow: 0 0 25px -5px rgba(6, 182, 212, 0.25);
+}
+.glow-amber {
+  box-shadow: 0 0 25px -5px rgba(245, 158, 11, 0.25);
+}
+.glow-emerald {
+  box-shadow: 0 0 25px -5px rgba(16, 185, 129, 0.25);
+}
+.glow-violet {
+  box-shadow: 0 0 25px -5px rgba(139, 92, 246, 0.25);
+}
+.glow-blue {
+  box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.25);
+}
+
+/* Theme variables */
+:root {
+  --theme-accent-primary: #10b981;
+  --theme-accent-secondary: #059669;
+  --theme-accent-light: #34d399;
+  --theme-accent-rgb: 16, 185, 129;
+}
+
+[data-theme="emerald"] {
+  --theme-accent-primary: #10b981;
+  --theme-accent-secondary: #059669;
+  --theme-accent-light: #34d399;
+  --theme-accent-rgb: 16, 185, 129;
+}
+
+[data-theme="violet"] {
+  --theme-accent-primary: #8b5cf6;
+  --theme-accent-secondary: #7c3aed;
+  --theme-accent-light: #a78bfa;
+  --theme-accent-rgb: 139, 92, 246;
+}
+
+[data-theme="blue"] {
+  --theme-accent-primary: #3b82f6;
+  --theme-accent-secondary: #2563eb;
+  --theme-accent-light: #60a5fa;
+  --theme-accent-rgb: 59, 130, 246;
+}
+
+.theme-accent-text {
+  color: var(--theme-accent-primary);
+}
+
+.theme-accent-bg {
+  background-color: var(--theme-accent-primary);
+}
+
+.theme-accent-bg-subtle {
+  background-color: rgba(var(--theme-accent-rgb), 0.12);
+}
+
+.theme-accent-border {
+  border-color: rgba(var(--theme-accent-rgb), 0.35);
+}
+
+.theme-accent-glow {
+  box-shadow: 0 0 25px -5px rgba(var(--theme-accent-rgb), 0.3);
+}
+
