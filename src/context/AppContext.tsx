@@ -431,7 +431,7 @@ return unsubscribe;
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
   };
 
-  const updateUser = async (updates: Partial<UserProfile>) => {
+  const updateUser: (updates: Partial<UserProfile>) => Promise<void>;
   try {
     const updated = await AuthService.updateUser(updates);
     setUser(updated);
