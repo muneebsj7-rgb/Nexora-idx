@@ -81,6 +81,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', accentTheme);
   }, [accentTheme]);
+  useEffect(() => {
+const unsubscribe = AuthService.onAuthStateChanged(
+(profile) => {
+setUser(profile);
+},
+(error) => {
+console.error(‘Firebase authentication error:’, error);
+}
+);
+
+return unsubscribe;
+
+}, []);
+  
 
   const setAccentTheme = (theme: AccentTheme) => {
     setAccentThemeState(theme);
