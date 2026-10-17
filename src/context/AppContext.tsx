@@ -87,7 +87,7 @@ const unsubscribe = AuthService.onAuthStateChanged(
 setUser(profile);
 },
 (error) => {
-console.error(‘Firebase authentication error:’, error);
+console.error('Firebase authentication error:', error);
 }
 );
 
