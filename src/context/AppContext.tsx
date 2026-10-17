@@ -58,7 +58,7 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile | null>(null);
+  const updateUser: (updates: Partial<UserProfile>) => Promise<void>;
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const [accentTheme, setAccentThemeState] = useState<AccentTheme>(() => {
     return (localStorage.getItem('nexora_accent_theme') as AccentTheme) || 'emerald';
