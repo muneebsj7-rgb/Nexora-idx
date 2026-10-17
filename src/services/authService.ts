@@ -1,161 +1,230 @@
-import { UserProfile } from '../types';
+import React, { useState } from 'react';
+import { useApp } from '../../context/AppContext';
+import { AuthService } from '../../services/authService';
+import { X, Mail, Lock, User, Shield, ArrowRight, CheckCircle } from 'lucide-react';
 
-const STORAGE_KEY_USER = 'nexora_user_session';
-const STORAGE_KEY_USERS_DB = 'nexora_registered_users';
+export const AuthModal: React.FC = () => {
+  const { authModalOpen, authModalMode, closeAuthModal, openAuthModal, loginUser, registerUser, addToast } = useApp();
 
-export interface AuthState {
-  user: UserProfile | null;
-  isAuthenticated: boolean;
-  isFirebaseActive: boolean;
-  statusMessage?: string;
-}
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [refCode, setRefCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [resetSuccessMsg, setResetSuccessMsg] = useState<string | null>(null);
 
-const DEFAULT_USER: UserProfile = {
-  id: 'usr_829104',
-  email: 'miner.alex@nexoramine.io',
-  displayName: 'Alex Thorne',
-  isEmailVerified: true,
-  kycTier: 'Tier 1 (Basic)',
-  createdAt: '2025-01-15T10:30:00.000Z',
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  referralCode: 'NEXO-9842',
-  twoFactorEnabled: false,
-  currency: 'USD',
-};
+  if (!authModalOpen) return null;
 
-export class AuthService {
-  private static currentUser: UserProfile | null = null;
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setResetSuccessMsg(null);
+    setLoading(true);
 
-  static initialize(): UserProfile {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_USER);
-      if (saved) {
-        this.currentUser = JSON.parse(saved);
-        return this.currentUser!;
+      if (authModalMode === 'login') {
+        await loginUser(email, password);
+      } else if (authModalMode === 'register') {
+        await registerUser(email, password, displayName, refCode);
+      } else if (authModalMode === 'forgot') {
+        const msg = await AuthService.sendPasswordReset(email);
+        setResetSuccessMsg(msg);
+        addToast('Reset Dispatched', msg, 'info');
       }
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('An unexpected error occurred.');
+      }
+    } finally {
+      setLoading(false);
     }
-    this.currentUser = DEFAULT_USER;
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(DEFAULT_USER));
-    return DEFAULT_USER;
-  }
+  };
 
-  static getCurrentUser(): UserProfile | null {
-    if (!this.currentUser) {
-      return this.initialize();
-    }
-    return this.currentUser;
-  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl overflow-hidden">
+        {/* Glow Accent */}
+        <div className="absolute -top-24 -right-24 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
 
-  static async login(email: string, pass: string): Promise<UserProfile> {
-    await new Promise((r) => setTimeout(r, 600));
+        <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold">
+              N
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-base">
+                {authModalMode === 'login' && 'Sign In to Nexora Mine'}
+                {authModalMode === 'register' && 'Create Miner Account'}
+                {authModalMode === 'forgot' && 'Reset Your Password'}
+              </h3>
+              <p className="text-xs text-slate-400">Cloud Mining & Portfolio Terminal</p>
+            </div>
+          </div>
+          <button
+            onClick={closeAuthModal}
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
 
-    if (!email || !pass) {
-      throw new Error('Please enter both email and password.');
-    }
+        {error && (
+          <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
 
-    if (pass.length < 6) {
-      throw new Error('Password must be at least 6 characters.');
-    }
+        {resetSuccessMsg && (
+          <div className="mt-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+            <span>{resetSuccessMsg}</span>
+          </div>
+        )}
 
-    // Check registered accounts or fallback
-    let usersDb: Record<string, UserProfile> = {};
-    try {
-      usersDb = JSON.parse(localStorage.getItem(STORAGE_KEY_USERS_DB) || '{}');
-    } catch {
-      usersDb = {};
-    }
+        <form onSubmit={handleSubmit} className="mt-5 space-y-3.5">
+          {authModalMode === 'register' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Display Name</label>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Satoshi Miner"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+            </div>
+          )}
 
-    let user = usersDb[email.toLowerCase()];
-    if (!user) {
-      // Create profile for this session
-      user = {
-        id: 'usr_' + Math.floor(100000 + Math.random() * 900000),
-        email: email.toLowerCase(),
-        displayName: email.split('@')[0],
-        isEmailVerified: false,
-        kycTier: 'None',
-        createdAt: new Date().toISOString(),
-        referralCode: 'NEXO-' + Math.floor(1000 + Math.random() * 9000),
-        twoFactorEnabled: false,
-        currency: 'USD',
-      };
-      usersDb[email.toLowerCase()] = user;
-      localStorage.setItem(STORAGE_KEY_USERS_DB, JSON.stringify(usersDb));
-    }
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Email Address</label>
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <input
+                type="email"
+                required
+                placeholder="miner@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+              />
+            </div>
+          </div>
 
-    this.currentUser = user;
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
-    return user;
-  }
+          {authModalMode !== 'forgot' && (
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-xs font-medium text-slate-300">Password</label>
+                {authModalMode === 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => openAuthModal('forgot')}
+                    className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+            </div>
+          )}
 
-  static async register(email: string, pass: string, displayName?: string, refCode?: string): Promise<UserProfile> {
-    await new Promise((r) => setTimeout(r, 700));
+          {authModalMode === 'register' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Referral Code <span className="text-slate-500 font-normal">(Optional)</span>
+              </label>
+              <div className="relative">
+                <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="e.g. NEXO-8291"
+                  value={refCode}
+                  onChange={(e) => setRefCode(e.target.value.toUpperCase())}
+                  className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono transition-colors"
+                />
+              </div>
+            </div>
+          )}
 
-    if (!email || !email.includes('@')) {
-      throw new Error('Please enter a valid email address.');
-    }
-    if (!pass || pass.length < 6) {
-      throw new Error('Password must be at least 6 characters.');
-    }
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-4 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-slate-950 font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-cyan-500/20 active:scale-[0.99]"
+          >
+            {loading ? (
+              <span className="inline-block w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <>
+                <span>
+                  {authModalMode === 'login' && 'Sign In'}
+                  {authModalMode === 'register' && 'Register Account'}
+                  {authModalMode === 'forgot' && 'Send Reset Link'}
+                </span>
+                <ArrowRight className="w-4 h-4" />
+              </>
+            )}
+          </button>
+        </form>
 
-    let usersDb: Record<string, UserProfile> = {};
-    try {
-      usersDb = JSON.parse(localStorage.getItem(STORAGE_KEY_USERS_DB) || '{}');
-    } catch {
-      usersDb = {};
-    }
+        <div className="mt-5 text-center text-xs text-slate-400">
+          {authModalMode === 'login' && (
+            <p>
+              Don't have an account?{' '}
+              <button
+                type="button"
+                onClick={() => openAuthModal('register')}
+                className="font-semibold text-cyan-400 hover:underline"
+              >
+                Create one now
+              </button>
+            </p>
+          )}
 
-    if (usersDb[email.toLowerCase()]) {
-      throw new Error('An account with this email already exists. Please log in.');
-    }
+          {authModalMode === 'register' && (
+            <p>
+              Already registered?{' '}
+              <button
+                type="button"
+                onClick={() => openAuthModal('login')}
+                className="font-semibold text-cyan-400 hover:underline"
+              >
+                Sign in here
+              </button>
+            </p>
+          )}
 
-    const newUser: UserProfile = {
-      id: 'usr_' + Math.floor(100000 + Math.random() * 900000),
-      email: email.toLowerCase(),
-      displayName: displayName?.trim() || email.split('@')[0],
-      isEmailVerified: false,
-      kycTier: 'None',
-      createdAt: new Date().toISOString(),
-      referralCode: 'NEXO-' + Math.floor(1000 + Math.random() * 9000),
-      referredBy: refCode?.trim() || undefined,
-      twoFactorEnabled: false,
-      currency: 'USD',
-    };
-
-    usersDb[email.toLowerCase()] = newUser;
-    localStorage.setItem(STORAGE_KEY_USERS_DB, JSON.stringify(usersDb));
-    this.currentUser = newUser;
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(newUser));
-    return newUser;
-  }
-
-  static async logout(): Promise<void> {
-    await new Promise((r) => setTimeout(r, 300));
-    this.currentUser = null;
-    localStorage.removeItem(STORAGE_KEY_USER);
-  }
-
-  static async sendPasswordReset(email: string): Promise<string> {
-    await new Promise((r) => setTimeout(r, 600));
-    if (!email || !email.includes('@')) {
-      throw new Error('Please provide a valid email address.');
-    }
-    return `Password reset instructions have been dispatched to ${email}. Please check your inbox and spam folder.`;
-  }
-
-  static async triggerEmailVerification(email: string): Promise<string> {
-    await new Promise((r) => setTimeout(r, 500));
-    return `A fresh verification link was sent to ${email}. Click the link to complete verification.`;
-  }
-
-  static updateUser(updates: Partial<UserProfile>): UserProfile {
-    if (!this.currentUser) {
-      this.currentUser = DEFAULT_USER;
-    }
-    this.currentUser = { ...this.currentUser, ...updates };
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(this.currentUser));
-    return this.currentUser;
-  }
-}
+          {authModalMode === 'forgot' && (
+            <p>
+              Remembered your credentials?{' '}
+              <button
+                type="button"
+                onClick={() => openAuthModal('login')}
+                className="font-semibold text-cyan-400 hover:underline"
+              >
+                Back to Sign In
+              </button>
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
