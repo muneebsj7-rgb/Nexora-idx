@@ -431,11 +431,24 @@ return unsubscribe;
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
   };
 
-  const updateUser = (updates: Partial<UserProfile>) => {
-    const updated = AuthService.updateUser(updates);
-    setUser({ ...updated });
-    addToast('Profile Updated', 'Your profile details have been saved.', 'success');
-  };
+  const updateUser = async (updates: Partial<UserProfile>) => {
+  try {
+    const updated = await AuthService.updateUser(updates);
+    setUser(updated);
+    addToast(
+      'Profile Updated',
+      'Your profile details have been saved.',
+      'success'
+    );
+  } catch (error) {
+    console.error('Failed to update profile:', error);
+    addToast(
+      'Update Failed',
+      'Your profile could not be updated. Please try again.',
+      'error'
+    );
+  }
+};
 
   const openAuthModal = (mode: 'login' | 'register' | 'forgot' = 'login') => {
     setAuthModalMode(mode);
