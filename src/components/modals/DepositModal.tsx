@@ -30,20 +30,24 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     const amountNum = parseFloat(depositAmount);
 
-    const result = submitDepositRequest(selectedSymbol, selectedNetwork, amountNum, txHash);
-    setSubmitting(false);
-
-    if (result.success) {
-      setDepositAmount('');
-      setTxHash('');
-      onClose();
-    } else {
-      addToast('Validation Error', result.message, 'error');
+    try {
+      const result = await submitDepositRequest(selectedSymbol, selectedNetwork, amountNum, txHash);
+      if (result.success) {
+        setDepositAmount('');
+        setTxHash('');
+        onClose();
+      } else {
+        addToast('Deposit Request Error', result.message, 'error');
+      }
+    } catch (err: any) {
+      addToast('Deposit Request Failed', err?.message || 'Failed to submit deposit request.', 'error');
+    } finally {
+      setSubmitting(false);
     }
   };
 

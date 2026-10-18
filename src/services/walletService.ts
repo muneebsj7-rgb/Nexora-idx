@@ -1,4 +1,14 @@
+import {
+  collection,
+  doc,
+  getDocs,
+  setDoc,
+  onSnapshot,
+  serverTimestamp,
+  FirestoreError,
+} from 'firebase/firestore';
 import { WalletAsset, Transaction } from '../types';
+import { db } from './firebase';
 
 export const INITIAL_WALLET_ASSETS: WalletAsset[] = [
   {
@@ -70,7 +80,7 @@ export const INITIAL_WALLET_ASSETS: WalletAsset[] = [
 
 export const INITIAL_TRANSACTIONS: Transaction[] = [
   {
-    id: 'tx-1094',
+    id: 'tx-demo-1094',
     type: 'MINING_PAYOUT',
     asset: 'BTC',
     amount: 0.000155,
@@ -79,10 +89,11 @@ export const INITIAL_TRANSACTIONS: Transaction[] = [
     status: 'COMPLETED',
     timestamp: new Date(Date.now() - 3600 * 1000 * 4).toISOString(),
     txHash: '0x9482f...c31b',
-    note: 'Daily Cloud Mining Share Yield (SHA-256 Pool)',
+    note: '[DEMO] Daily Cloud Mining Share Yield (SHA-256 Pool)',
+    isDemo: true,
   },
   {
-    id: 'tx-1093',
+    id: 'tx-demo-1093',
     type: 'REFERRAL_BONUS',
     asset: 'USDT',
     amount: 15.00,
@@ -91,10 +102,11 @@ export const INITIAL_TRANSACTIONS: Transaction[] = [
     status: 'COMPLETED',
     timestamp: new Date(Date.now() - 3600 * 1000 * 16).toISOString(),
     txHash: '0x712a8...99e1',
-    note: 'Tier-1 Referral Commission (User #8291)',
+    note: '[DEMO] Tier-1 Referral Commission (User #8291)',
+    isDemo: true,
   },
   {
-    id: 'tx-1092',
+    id: 'tx-demo-1092',
     type: 'DEPOSIT',
     asset: 'USDT',
     amount: 200.00,
@@ -104,10 +116,11 @@ export const INITIAL_TRANSACTIONS: Transaction[] = [
     timestamp: new Date(Date.now() - 3600 * 1000 * 48).toISOString(),
     txHash: '0x438bf...73a0',
     network: 'TRC20',
-    note: 'External Wallet Deposit',
+    note: '[DEMO] External Wallet Deposit (Simulated)',
+    isDemo: true,
   },
   {
-    id: 'tx-1091',
+    id: 'tx-demo-1091',
     type: 'WITHDRAWAL',
     asset: 'USDT',
     amount: 50.00,
@@ -117,6 +130,319 @@ export const INITIAL_TRANSACTIONS: Transaction[] = [
     timestamp: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
     toAddress: 'TFx4921...8mKz',
     network: 'TRC20',
-    note: 'Awaiting Automated Compliance & Node Confirmation',
+    note: '[DEMO] Awaiting Automated Compliance & Node Confirmation',
+    isDemo: true,
   }
 ];
+
+export interface WalletBalanceRecord {
+  balance: number;
+  lockedBalance: number;
+  updatedAt?: string;
+}
+
+export interface SubmitDepositParams {
+  assetSymbol: string;
+  network: string;
+  amount: number;
+  txHash: string;
+  usdRate: number;
+}
+
+export interface SubmitWithdrawalParams {
+  assetSymbol: string;
+  network: string;
+  amount: number;
+  address: string;
+  fee: number;
+  usdRate: number;
+}
+
+function formatFirestoreWalletError(error: unknown, action: string): Error {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as FirestoreError).code;
+    if (code === 'permission-denied') {
+      return new Error(
+        `Cloud Firestore permission denied during ${action}. ` +
+        `Client balance modifications or non-pending transactions are rejected by security rules. ` +
+        `Ensure firestore.rules have been deployed to your Firebase project.`
+      );
+    }
+    if (code === 'unavailable') {
+      return new Error(`Firestore service is temporarily unavailable. Please check your connection and retry.`);
+    }
+  }
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(`An unexpected error occurred during ${action}.`);
+}
+
+/**
+ * Firestore data service for reading authenticated user's wallet assets and transactions.
+ * Enforces client read-only balance access and client pending-only transaction requests.
+ *
+ * Paths:
+ * - users/{uid}/wallet/{assetSymbol}
+ * - users/{uid}/transactions/{transactionId}
+ */
+export class WalletFirestoreService {
+  /**
+   * Subscribes to real-time wallet asset balances stored at users/{uid}/wallet.
+   * Balances are read-only from the client.
+   */
+  static subscribeUserWallet(
+    uid: string,
+    onUpdate: (balances: Record<string, WalletBalanceRecord>) => void,
+    onError?: (error: Error) => void
+  ): () => void {
+    if (!db) {
+      console.warn('Firestore is not configured. Wallet balances will use default state.');
+      return () => {};
+    }
+
+    try {
+      const walletColRef = collection(db, 'users', uid, 'wallet');
+      return onSnapshot(
+        walletColRef,
+        (snapshot) => {
+          const balances: Record<string, WalletBalanceRecord> = {};
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            const symbol = docSnap.id.toUpperCase();
+            balances[symbol] = {
+              balance: typeof data.balance === 'number' ? data.balance : 0,
+              lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
+              updatedAt: data.updatedAt ? String(data.updatedAt) : undefined,
+            };
+          });
+          onUpdate(balances);
+        },
+        (error) => {
+          console.warn(`Firestore wallet subscription note for uid ${uid}:`, error.message);
+          onError?.(formatFirestoreWalletError(error, 'reading wallet balances'));
+        }
+      );
+    } catch (err) {
+      console.warn('Error setting up wallet snapshot listener:', err);
+      onError?.(formatFirestoreWalletError(err, 'subscribing to wallet'));
+      return () => {};
+    }
+  }
+
+  /**
+   * Reads current wallet balances once from users/{uid}/wallet.
+   */
+  static async fetchUserWallet(uid: string): Promise<Record<string, WalletBalanceRecord>> {
+    if (!db) return {};
+
+    try {
+      const walletColRef = collection(db, 'users', uid, 'wallet');
+      const snap = await getDocs(walletColRef);
+      const balances: Record<string, WalletBalanceRecord> = {};
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        const symbol = docSnap.id.toUpperCase();
+        balances[symbol] = {
+          balance: typeof data.balance === 'number' ? data.balance : 0,
+          lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
+        };
+      });
+      return balances;
+    } catch (error) {
+      console.error(`Error reading users/${uid}/wallet:`, error);
+      throw formatFirestoreWalletError(error, 'reading wallet assets');
+    }
+  }
+
+  /**
+   * Subscribes to real-time transaction ledger stored at users/{uid}/transactions.
+   */
+  static subscribeUserTransactions(
+    uid: string,
+    onUpdate: (transactions: Transaction[]) => void,
+    onError?: (error: Error) => void
+  ): () => void {
+    if (!db) {
+      console.warn('Firestore is not configured. Real transaction listener disabled.');
+      return () => {};
+    }
+
+    try {
+      const txColRef = collection(db, 'users', uid, 'transactions');
+      return onSnapshot(
+        txColRef,
+        (snapshot) => {
+          const txs: Transaction[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            txs.push({
+              id: docSnap.id,
+              userId: uid,
+              type: data.type,
+              asset: data.asset,
+              amount: typeof data.amount === 'number' ? data.amount : 0,
+              amountUSD: typeof data.amountUSD === 'number' ? data.amountUSD : 0,
+              fee: typeof data.fee === 'number' ? data.fee : 0,
+              status: data.status,
+              timestamp: data.timestamp || new Date().toISOString(),
+              txHash: data.txHash,
+              network: data.network,
+              toAddress: data.toAddress,
+              fromAddress: data.fromAddress,
+              note: data.note,
+              isDemo: false,
+            });
+          });
+
+          // Sort descending by timestamp
+          txs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          onUpdate(txs);
+        },
+        (error) => {
+          console.warn(`Firestore transaction subscription note for uid ${uid}:`, error.message);
+          onError?.(formatFirestoreWalletError(error, 'reading transactions'));
+        }
+      );
+    } catch (err) {
+      console.warn('Error setting up transaction snapshot listener:', err);
+      onError?.(formatFirestoreWalletError(err, 'subscribing to transactions'));
+      return () => {};
+    }
+  }
+
+  /**
+   * Submits a pending deposit request to users/{uid}/transactions/{transactionId}.
+   * Security constraints:
+   * - Status must strictly be PENDING_CONFIRMATION
+   * - Cannot credit own balance from client
+   */
+  static async submitDepositRequest(
+    uid: string,
+    params: SubmitDepositParams
+  ): Promise<Transaction> {
+    if (!db) {
+      throw new Error('Firestore is not initialized. Cannot persist deposit request.');
+    }
+
+    if (!params.amount || params.amount <= 0) {
+      throw new Error('Deposit amount must be greater than zero.');
+    }
+    if (!params.txHash || params.txHash.trim().length < 8) {
+      throw new Error('A valid blockchain transaction hash (TxID) is required.');
+    }
+    if (!params.assetSymbol) {
+      throw new Error('Asset symbol is required.');
+    }
+
+    const cleanSymbol = params.assetSymbol.toUpperCase();
+    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const txDocRef = doc(db, 'users', uid, 'transactions', txId);
+
+    const newTx: Transaction = {
+      id: txId,
+      userId: uid,
+      type: 'DEPOSIT',
+      asset: cleanSymbol,
+      amount: params.amount,
+      amountUSD: Number((params.amount * params.usdRate).toFixed(2)),
+      fee: 0,
+      status: 'PENDING_CONFIRMATION',
+      timestamp: new Date().toISOString(),
+      network: params.network,
+      txHash: params.txHash.trim(),
+      note: 'Pending Blockchain Node Confirmations (0/12)',
+      isDemo: false,
+    };
+
+    try {
+      await setDoc(txDocRef, {
+        id: newTx.id,
+        userId: uid,
+        type: newTx.type,
+        asset: newTx.asset,
+        amount: newTx.amount,
+        amountUSD: newTx.amountUSD,
+        fee: newTx.fee,
+        status: newTx.status,
+        timestamp: newTx.timestamp,
+        network: newTx.network,
+        txHash: newTx.txHash,
+        note: newTx.note,
+        createdAt: serverTimestamp(),
+      });
+      return newTx;
+    } catch (error) {
+      console.error(`Error writing users/${uid}/transactions/${txId}:`, error);
+      throw formatFirestoreWalletError(error, 'submitting deposit request');
+    }
+  }
+
+  /**
+   * Submits a pending withdrawal request to users/{uid}/transactions/{transactionId}.
+   * Security constraints:
+   * - Status must strictly be PENDING_REVIEW
+   * - Client cannot self-approve or mark as completed
+   * - Wallet balances are read-only on client; trusted backend Cloud Function debits balance
+   */
+  static async submitWithdrawalRequest(
+    uid: string,
+    params: SubmitWithdrawalParams
+  ): Promise<Transaction> {
+    if (!db) {
+      throw new Error('Firestore is not initialized. Cannot persist withdrawal request.');
+    }
+
+    if (!params.amount || params.amount <= 0) {
+      throw new Error('Withdrawal amount must be greater than zero.');
+    }
+    if (!params.address || params.address.trim().length < 12) {
+      throw new Error('Please enter a valid recipient blockchain address.');
+    }
+    if (!params.assetSymbol) {
+      throw new Error('Asset symbol is required.');
+    }
+
+    const cleanSymbol = params.assetSymbol.toUpperCase();
+    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const txDocRef = doc(db, 'users', uid, 'transactions', txId);
+
+    const newTx: Transaction = {
+      id: txId,
+      userId: uid,
+      type: 'WITHDRAWAL',
+      asset: cleanSymbol,
+      amount: params.amount,
+      amountUSD: Number((params.amount * params.usdRate).toFixed(2)),
+      fee: params.fee,
+      status: 'PENDING_REVIEW',
+      timestamp: new Date().toISOString(),
+      network: params.network,
+      toAddress: params.address.trim(),
+      note: 'Awaiting Automated Compliance & Signer Node Review',
+      isDemo: false,
+    };
+
+    try {
+      await setDoc(txDocRef, {
+        id: newTx.id,
+        userId: uid,
+        type: newTx.type,
+        asset: newTx.asset,
+        amount: newTx.amount,
+        amountUSD: newTx.amountUSD,
+        fee: newTx.fee,
+        status: newTx.status,
+        timestamp: newTx.timestamp,
+        network: newTx.network,
+        toAddress: newTx.toAddress,
+        note: newTx.note,
+        createdAt: serverTimestamp(),
+      });
+      return newTx;
+    } catch (error) {
+      console.error(`Error writing users/${uid}/transactions/${txId}:`, error);
+      throw formatFirestoreWalletError(error, 'submitting withdrawal request');
+    }
+  }
+}

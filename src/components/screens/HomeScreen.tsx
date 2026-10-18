@@ -760,8 +760,15 @@ export const HomeScreen: React.FC = () => {
                     {tx.type === 'TASK_REWARD' && <GradientIcon icon={Sparkles} theme="cyan" size="sm" variant="boxed" />}
 
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-bold text-white truncate group-hover:text-emerald-300 transition-colors">
-                        {tx.note || tx.type.replace('_', ' ')}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-white truncate group-hover:text-emerald-300 transition-colors">
+                          {tx.note || tx.type.replace('_', ' ')}
+                        </span>
+                        {tx.isDemo && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            DEMO
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">
                         {new Date(tx.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(tx.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}

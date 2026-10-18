@@ -3,7 +3,7 @@ import { UserProfile, CryptoMarket, MiningSession, WalletAsset, Transaction, Dai
 import { AuthService } from '../services/authService';
 import { fetchLiveMarketTickers } from '../services/marketService';
 import { INITIAL_MINING_SESSION } from '../services/miningService';
-import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS } from '../services/walletService';
+import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService } from '../services/walletService';
 import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS } from '../services/earnService';
 import confetti from 'canvas-confetti';
 
@@ -37,8 +37,8 @@ interface AppContextType {
   earnTasks: EarnTask[];
   claimDailyReward: (day: number) => void;
   claimTaskReward: (taskId: string) => void;
-  submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => { success: boolean; message: string };
-  submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => { success: boolean; message: string };
+  submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => Promise<{ success: boolean; message: string }>;
+  submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => Promise<{ success: boolean; message: string }>;
   submitPlanOrder: (planName: string, priceUSD: number) => { success: boolean; message: string };
   toasts: ToastMessage[];
   addToast: (title: string, message: string, type?: ToastMessage['type']) => void;
@@ -88,6 +88,58 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       unsubscribe();
     };
   }, []);
+
+  // Real-time Firestore sync for Wallet Balances and Transactions
+  useEffect(() => {
+    if (user && !user.isDemo) {
+      // Baseline for real authenticated accounts: 0.00 until funded and confirmed
+      setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+      setTransactions([]);
+
+      // 1. Subscribe to users/{uid}/wallet subcollection (Read-only on client)
+      const unsubWallet = WalletFirestoreService.subscribeUserWallet(
+        user.id,
+        (balances) => {
+          setWalletAssets((prev) =>
+            prev.map((asset) => {
+              const rec = balances[asset.symbol];
+              if (rec) {
+                return {
+                  ...asset,
+                  balance: rec.balance,
+                  lockedBalance: rec.lockedBalance,
+                };
+              }
+              return { ...asset, balance: 0, lockedBalance: 0 };
+            })
+          );
+        },
+        (err) => {
+          console.warn('Firestore wallet listener notice:', err.message);
+        }
+      );
+
+      // 2. Subscribe to users/{uid}/transactions subcollection
+      const unsubTx = WalletFirestoreService.subscribeUserTransactions(
+        user.id,
+        (realTxs) => {
+          setTransactions(realTxs);
+        },
+        (err) => {
+          console.warn('Firestore transactions listener notice:', err.message);
+        }
+      );
+
+      return () => {
+        unsubWallet();
+        unsubTx();
+      };
+    } else {
+      // Demo / sandbox session: load initial simulated demo assets & demo transactions
+      setWalletAssets(INITIAL_WALLET_ASSETS);
+      setTransactions(INITIAL_TRANSACTIONS);
+    }
+  }, [user?.id, user?.isDemo]);
 
   const addToast = (title: string, message: string, type: ToastMessage['type'] = 'info') => {
     const id = 'toast_' + Date.now() + Math.random().toString(36).substring(2, 6);
@@ -309,37 +361,89 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     addToast('Bounty Claimed!', `+$${task.rewardUSD.toFixed(2)} ${task.rewardAsset} credited.`, 'success');
   };
 
-  const submitDepositRequest = (assetSymbol: string, network: string, amount: number, txHash: string) => {
+  const submitDepositRequest = async (
+    assetSymbol: string,
+    network: string,
+    amount: number,
+    txHash: string
+  ): Promise<{ success: boolean; message: string }> => {
     if (!amount || amount <= 0) {
       return { success: false, message: 'Deposit amount must be greater than zero.' };
     }
     if (!txHash || txHash.trim().length < 8) {
-      return { success: false, message: 'Please provide a valid transaction hash (TxID).' };
+      return { success: false, message: 'Please provide a valid blockchain transaction hash (TxID).' };
     }
 
     const asset = walletAssets.find((a) => a.symbol === assetSymbol);
-    const amountUSD = Number((amount * (asset?.usdRate || 1)).toFixed(2));
+    const usdRate = asset?.usdRate || 1;
 
-    const newTx: Transaction = {
-      id: 'tx-' + Date.now().toString().slice(-5),
-      type: 'DEPOSIT',
-      asset: assetSymbol,
-      amount,
-      amountUSD,
-      fee: 0,
-      status: 'PENDING_CONFIRMATION',
-      timestamp: new Date().toISOString(),
-      network,
-      txHash: txHash.trim(),
-      note: 'Pending Blockchain Node Confirmations (3/12)',
-    };
+    // Check if user is an authenticated Firebase user
+    if (user && !user.isDemo) {
+      try {
+        const newTx = await WalletFirestoreService.submitDepositRequest(user.id, {
+          assetSymbol,
+          network,
+          amount,
+          txHash,
+          usdRate,
+        });
 
-    setTransactions((prev) => [newTx, ...prev]);
-    addToast('Deposit Submitted', `Request for ${amount} ${assetSymbol} is queued for node confirmation.`, 'info');
-    return { success: true, message: 'Deposit submitted. Status is pending node confirmation.' };
+        setTransactions((prev) => {
+          if (prev.some((t) => t.id === newTx.id)) return prev;
+          return [newTx, ...prev];
+        });
+
+        addToast(
+          'Deposit Request Saved',
+          `Deposit for ${amount} ${assetSymbol} saved to Firestore as PENDING_CONFIRMATION. Balances will be credited once confirmed by network nodes.`,
+          'info'
+        );
+        return {
+          success: true,
+          message: 'Deposit request saved in Firestore. Status: Pending Node Confirmation (0/12).',
+        };
+      } catch (err: any) {
+        const errorMsg = err?.message || 'Failed to submit deposit request to Cloud Firestore.';
+        addToast('Deposit Request Error', errorMsg, 'error');
+        return { success: false, message: errorMsg };
+      }
+    } else {
+      // Demo / Sandbox mode
+      const amountUSD = Number((amount * usdRate).toFixed(2));
+      const demoTx: Transaction = {
+        id: 'tx-demo-' + Date.now().toString().slice(-5),
+        type: 'DEPOSIT',
+        asset: assetSymbol,
+        amount,
+        amountUSD,
+        fee: 0,
+        status: 'PENDING_CONFIRMATION',
+        timestamp: new Date().toISOString(),
+        network,
+        txHash: txHash.trim(),
+        note: '[DEMO] Pending Blockchain Node Confirmations (Simulated)',
+        isDemo: true,
+      };
+
+      setTransactions((prev) => [demoTx, ...prev]);
+      addToast(
+        'Demo Deposit Queued',
+        `[DEMO] Simulated deposit of ${amount} ${assetSymbol} added to local demo ledger.`,
+        'info'
+      );
+      return {
+        success: true,
+        message: '[DEMO] Simulated deposit request created. Log in to save real requests to Firestore.',
+      };
+    }
   };
 
-  const submitWithdrawalRequest = (assetSymbol: string, network: string, amount: number, address: string) => {
+  const submitWithdrawalRequest = async (
+    assetSymbol: string,
+    network: string,
+    amount: number,
+    address: string
+  ): Promise<{ success: boolean; message: string }> => {
     const asset = walletAssets.find((a) => a.symbol === assetSymbol);
     if (!asset) {
       return { success: false, message: 'Asset not found.' };
@@ -350,42 +454,84 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (amount > asset.balance) {
       return { success: false, message: 'Insufficient available balance.' };
     }
-    if (!address || address.length < 16) {
-      return { success: false, message: 'Please provide a valid wallet address.' };
+    if (!address || address.trim().length < 12) {
+      return { success: false, message: 'Please provide a valid destination wallet address.' };
     }
 
-    // Deduct available balance and hold in locked balance
-    setWalletAssets((prev) =>
-      prev.map((a) => {
-        if (a.symbol === assetSymbol) {
-          return {
-            ...a,
-            balance: Number((a.balance - amount).toFixed(6)),
-            lockedBalance: Number((a.lockedBalance + amount).toFixed(6)),
-          };
-        }
-        return a;
-      })
-    );
+    if (user && !user.isDemo) {
+      try {
+        const newTx = await WalletFirestoreService.submitWithdrawalRequest(user.id, {
+          assetSymbol,
+          network,
+          amount,
+          address,
+          fee: asset.withdrawFee,
+          usdRate: asset.usdRate,
+        });
 
-    const amountUSD = Number((amount * asset.usdRate).toFixed(2));
-    const newTx: Transaction = {
-      id: 'tx-' + Date.now().toString().slice(-5),
-      type: 'WITHDRAWAL',
-      asset: assetSymbol,
-      amount,
-      amountUSD,
-      fee: asset.withdrawFee,
-      status: 'PENDING_REVIEW',
-      timestamp: new Date().toISOString(),
-      network,
-      toAddress: address,
-      note: 'Awaiting Automated Compliance & Signer Node',
-    };
+        // Client cannot modify wallet balances directly.
+        // Balances are read-only and debited by trusted backend (Firebase Cloud Functions / Admin SDK)
+        setTransactions((prev) => {
+          if (prev.some((t) => t.id === newTx.id)) return prev;
+          return [newTx, ...prev];
+        });
 
-    setTransactions((prev) => [newTx, ...prev]);
-    addToast('Withdrawal Queued', `Requested withdrawal of ${amount} ${assetSymbol}. Under compliance review.`, 'warning');
-    return { success: true, message: 'Withdrawal submitted for automated security review.' };
+        addToast(
+          'Withdrawal Request Queued',
+          `Withdrawal for ${amount} ${assetSymbol} recorded in Firestore as PENDING_REVIEW. Trusted backend will audit and debit balance securely.`,
+          'warning'
+        );
+        return {
+          success: true,
+          message: 'Withdrawal request saved in Firestore. Client balance modifications are blocked for security.',
+        };
+      } catch (err: any) {
+        const errorMsg = err?.message || 'Failed to submit withdrawal request to Cloud Firestore.';
+        addToast('Withdrawal Denied', errorMsg, 'error');
+        return { success: false, message: errorMsg };
+      }
+    } else {
+      // Demo / Sandbox mode
+      setWalletAssets((prev) =>
+        prev.map((a) => {
+          if (a.symbol === assetSymbol) {
+            return {
+              ...a,
+              balance: Number((a.balance - amount).toFixed(6)),
+              lockedBalance: Number((a.lockedBalance + amount).toFixed(6)),
+            };
+          }
+          return a;
+        })
+      );
+
+      const amountUSD = Number((amount * asset.usdRate).toFixed(2));
+      const demoTx: Transaction = {
+        id: 'tx-demo-' + Date.now().toString().slice(-5),
+        type: 'WITHDRAWAL',
+        asset: assetSymbol,
+        amount,
+        amountUSD,
+        fee: asset.withdrawFee,
+        status: 'PENDING_REVIEW',
+        timestamp: new Date().toISOString(),
+        network,
+        toAddress: address,
+        note: '[DEMO] Awaiting Automated Compliance & Signer Node (Simulated)',
+        isDemo: true,
+      };
+
+      setTransactions((prev) => [demoTx, ...prev]);
+      addToast(
+        'Demo Withdrawal Queued',
+        `[DEMO] Simulated withdrawal of ${amount} ${assetSymbol}. Under demo review.`,
+        'warning'
+      );
+      return {
+        success: true,
+        message: '[DEMO] Simulated withdrawal request submitted.',
+      };
+    }
   };
 
   const submitPlanOrder = (planName: string, priceUSD: number) => {

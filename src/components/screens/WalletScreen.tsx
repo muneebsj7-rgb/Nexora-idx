@@ -22,7 +22,7 @@ import { CoinIcon } from '../ui/CoinIcon';
 import { GradientIcon } from '../ui/GradientIcon';
 
 export const WalletScreen: React.FC = () => {
-  const { walletAssets, transactions, addToast } = useApp();
+  const { user, walletAssets, transactions, addToast } = useApp();
 
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -59,28 +59,57 @@ export const WalletScreen: React.FC = () => {
     setTimeout(() => setCopiedTx(false), 2000);
   };
 
+  const isRealUser = Boolean(user && !user.isDemo);
+
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6 pb-24 px-4 sm:px-6 pt-2 animate-in fade-in duration-300">
       {/* Header */}
-      <div>
-        <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
-          Mining Wallet & Custody
-          <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-            Multi-Sig Vault
-          </span>
-        </h1>
-        <p className="text-xs text-slate-400 mt-1">
-          Secure multi-chain asset balances, deposit addresses, and payout records
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
+            Mining Wallet & Custody
+            <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              Multi-Sig Vault
+            </span>
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Secure multi-chain asset balances, deposit addresses, and payout records
+          </p>
+        </div>
+
+        <div>
+          {isRealUser ? (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Firestore Synced
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              Demo Sandbox (Simulated)
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Main Balance Overview Card */}
       <div className="rounded-3xl p-6 sm:p-7 border border-emerald-500/30 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 shadow-2xl relative overflow-hidden">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider block">
-              Estimated Net Worth
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider block">
+                Estimated Net Worth
+              </span>
+              {isRealUser ? (
+                <span className="text-[10px] px-2 py-0.2 rounded bg-slate-800 text-slate-300 font-mono">
+                  Read-Only Client
+                </span>
+              ) : (
+                <span className="text-[10px] px-2 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono">
+                  Simulated Balance
+                </span>
+              )}
+            </div>
             <div className="text-3xl sm:text-4xl font-extrabold text-white font-mono mt-1 tracking-tight">
               ${totalUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
@@ -98,6 +127,12 @@ export const WalletScreen: React.FC = () => {
                 </strong>
               </span>
             </div>
+
+            {isRealUser && (
+              <p className="mt-3 text-[11px] text-slate-400 max-w-xl leading-relaxed">
+                <span className="text-emerald-400 font-semibold">Financial Security:</span> Wallet balances are locked against client-side tampering. Deposits and payouts are credited via trusted server-side Cloud Functions once blockchain node confirmations are verified.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -235,6 +270,7 @@ export const WalletScreen: React.FC = () => {
           <div className="space-y-2.5">
             {filteredTransactions.map((tx) => {
               const isPositive = ['DEPOSIT', 'MINING_PAYOUT', 'REFERRAL_BONUS', 'TASK_REWARD'].includes(tx.type);
+              const isPending = tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW';
               return (
                 <div
                   key={tx.id}
@@ -249,11 +285,24 @@ export const WalletScreen: React.FC = () => {
                     {tx.type === 'TASK_REWARD' && <GradientIcon icon={Sparkles} theme="cyan" size="sm" variant="boxed" />}
 
                     <div className="min-w-0 flex-1">
-                      <div className="font-bold text-white text-xs truncate">
-                        {tx.note || tx.type.replace('_', ' ')}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-white text-xs truncate">
+                          {tx.note || tx.type.replace('_', ' ')}
+                        </span>
+                        {tx.isDemo && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            DEMO
+                          </span>
+                        )}
+                        {isPending && !tx.isDemo && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            FIRESTORE
+                          </span>
+                        )}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">
-                        {new Date(tx.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                      <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate flex items-center gap-1.5">
+                        <span>{new Date(tx.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                        {tx.network && <span>• {tx.network}</span>}
                       </div>
                     </div>
                   </div>
@@ -266,11 +315,17 @@ export const WalletScreen: React.FC = () => {
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold inline-block ${
                         tx.status === 'COMPLETED'
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                          : tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW'
+                          : tx.status === 'PENDING_CONFIRMATION'
                           ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                          : tx.status === 'PENDING_REVIEW'
+                          ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
                           : 'bg-slate-800 text-slate-400'
                       }`}>
-                        {tx.status.replace('_', ' ')}
+                        {tx.status === 'PENDING_CONFIRMATION'
+                          ? 'Awaiting Confirmation'
+                          : tx.status === 'PENDING_REVIEW'
+                          ? 'Compliance Review'
+                          : tx.status.replace('_', ' ')}
                       </span>
                     </div>
                   </div>
@@ -279,8 +334,13 @@ export const WalletScreen: React.FC = () => {
             })}
           </div>
         ) : (
-          <div className="p-8 text-center text-xs text-slate-500">
-            No transaction records found matching the selected filter.
+          <div className="p-8 text-center text-xs text-slate-500 space-y-1">
+            <p className="font-semibold text-slate-400">No transaction records found.</p>
+            <p className="text-[11px] text-slate-500">
+              {isRealUser
+                ? 'Your submitted deposit and withdrawal requests will synchronize here in real time.'
+                : 'Switch filters or submit a demo transaction above to view records.'}
+            </p>
           </div>
         )}
       </div>
@@ -294,7 +354,12 @@ export const WalletScreen: React.FC = () => {
                 <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
                   <CheckCircle2 className="w-4 h-4" />
                 </div>
-                <h3 className="font-bold text-white text-base">Transaction Details</h3>
+                <div>
+                  <h3 className="font-bold text-white text-base">Transaction Details</h3>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    {selectedTx.isDemo ? 'Sandbox Simulation' : 'Firestore Synced Record'}
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => setSelectedTx(null)}
@@ -315,10 +380,29 @@ export const WalletScreen: React.FC = () => {
                 </span>
               </div>
 
-              <div className="space-y-2 pt-2">
+              {selectedTx.isDemo ? (
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px]">
+                  <strong>Demo Mode:</strong> This is a sandbox simulation transaction. No real cryptocurrency has been transferred or credited.
+                </div>
+              ) : selectedTx.status === 'PENDING_CONFIRMATION' ? (
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px]">
+                  <strong>Pending Node Confirmation:</strong> This deposit is saved in Firestore. In accordance with multi-sig security, client balance modification is blocked; balance is credited server-side via Cloud Functions once blockchain nodes reach 12 confirmations.
+                </div>
+              ) : selectedTx.status === 'PENDING_REVIEW' ? (
+                <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[11px]">
+                  <strong>Under Compliance Review:</strong> This withdrawal request is saved in Firestore. Client cannot debit balances directly; trusted server-side logic audits and executes payouts.
+                </div>
+              ) : null}
+
+              <div className="space-y-2 pt-1">
                 <div className="flex justify-between py-1 border-b border-slate-800/80">
                   <span className="text-slate-400">Transaction ID:</span>
-                  <span className="font-mono text-slate-200 font-semibold">{selectedTx.id}</span>
+                  <span className="font-mono text-slate-200 font-semibold truncate max-w-[220px]">{selectedTx.id}</span>
+                </div>
+
+                <div className="flex justify-between py-1 border-b border-slate-800/80">
+                  <span className="text-slate-400">Type:</span>
+                  <span className="font-mono text-slate-200">{selectedTx.type.replace('_', ' ')}</span>
                 </div>
 
                 <div className="flex justify-between py-1 border-b border-slate-800/80">
@@ -331,14 +415,22 @@ export const WalletScreen: React.FC = () => {
                   <span className="text-slate-200">{selectedTx.network || 'Internal Stratum Ledger'}</span>
                 </div>
 
+                {selectedTx.toAddress && (
+                  <div className="flex justify-between py-1 border-b border-slate-800/80">
+                    <span className="text-slate-400">Destination:</span>
+                    <span className="font-mono text-slate-300 truncate max-w-[200px]">{selectedTx.toAddress}</span>
+                  </div>
+                )}
+
                 {selectedTx.txHash && (
                   <div className="flex items-center justify-between py-1 border-b border-slate-800/80">
                     <span className="text-slate-400">Tx Hash:</span>
                     <div className="flex items-center gap-1 font-mono text-cyan-400">
-                      <span>{selectedTx.txHash}</span>
+                      <span className="truncate max-w-[180px]">{selectedTx.txHash}</span>
                       <button
                         onClick={() => copyTxHash(selectedTx.txHash)}
                         className="p-1 hover:text-white"
+                        title="Copy Tx Hash"
                       >
                         {copiedTx ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>

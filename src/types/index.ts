@@ -99,6 +99,8 @@ export interface Transaction {
   toAddress?: string;
   fromAddress?: string;
   note?: string;
+  userId?: string;
+  isDemo?: boolean;
 }
 
 export interface EarnTask {

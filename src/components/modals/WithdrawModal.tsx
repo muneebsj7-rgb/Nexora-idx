@@ -30,20 +30,24 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, d
     setAmount(currentAsset.balance.toString());
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
 
-    const result = submitWithdrawalRequest(selectedSymbol, selectedNetwork, numAmount, address);
-    setSubmitting(false);
-
-    if (result.success) {
-      setAmount('');
-      setAddress('');
-      setTwoFactorCode('');
-      onClose();
-    } else {
-      addToast('Withdrawal Denied', result.message, 'error');
+    try {
+      const result = await submitWithdrawalRequest(selectedSymbol, selectedNetwork, numAmount, address);
+      if (result.success) {
+        setAmount('');
+        setAddress('');
+        setTwoFactorCode('');
+        onClose();
+      } else {
+        addToast('Withdrawal Denied', result.message, 'error');
+      }
+    } catch (err: any) {
+      addToast('Withdrawal Error', err?.message || 'Failed to submit withdrawal request.', 'error');
+    } finally {
+      setSubmitting(false);
     }
   };
 

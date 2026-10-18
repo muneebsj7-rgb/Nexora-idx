@@ -58,6 +58,54 @@ service cloud.firestore {
 
       // Deletions are forbidden from client SDK
       allow delete: if false;
+
+      /**
+       * Wallet balance subcollection: /users/{userId}/wallet/{assetSymbol}
+       *
+       * Financial Security Constraints:
+       * 1. Read: Authenticated owner can read their own asset balances.
+       * 2. Write (create, update, delete): Strictly FORBIDDEN from client SDK.
+       *    Clients can never modify, credit, debit, or tamper with wallet balances.
+       *    Balance adjustments can ONLY be performed by trusted backend services
+       *    (e.g., Firebase Cloud Functions using the Firebase Admin SDK)
+       *    after blockchain confirmations or compliance verification.
+       */
+      match /wallet/{assetSymbol} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+
+      /**
+       * Transactions subcollection: /users/{userId}/transactions/{transactionId}
+       *
+       * Financial Security Constraints:
+       * 1. Read: Authenticated owner can read only their own transaction records.
+       * 2. Create: Authenticated owner can submit pending transaction requests only.
+       *    - Must specify userId matching request.auth.uid.
+       *    - Amount must be a positive number.
+       *    - Type must be either 'DEPOSIT' or 'WITHDRAWAL'.
+       *      Clients CANNOT self-credit mining payouts or referral bonuses.
+       *    - DEPOSIT requests must strictly have status 'PENDING_CONFIRMATION'.
+       *    - WITHDRAWAL requests must strictly have status 'PENDING_REVIEW'.
+       *    - Client cannot mark any transaction as 'COMPLETED' or 'FAILED'.
+       * 3. Update: Strictly FORBIDDEN from client SDK. Users cannot alter submitted
+       *    requests, change amounts, or approve their own transactions.
+       * 4. Delete: Strictly FORBIDDEN from client SDK to preserve audit trails.
+       */
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.amount is number
+          && request.resource.data.amount > 0
+          && request.resource.data.type in ['DEPOSIT', 'WITHDRAWAL']
+          && (
+            (request.resource.data.type == 'DEPOSIT' && request.resource.data.status == 'PENDING_CONFIRMATION')
+            ||
+            (request.resource.data.type == 'WITHDRAWAL' && request.resource.data.status == 'PENDING_REVIEW')
+          );
+        allow update, delete: if false;
+      }
     }
 
     // Default deny for all other collections and documents
