@@ -4,7 +4,7 @@ import { AuthService } from '../../services/authService';
 import { X, Mail, Lock, User, Shield, ArrowRight, CheckCircle } from 'lucide-react';
 
 export const AuthModal: React.FC = () => {
-  const { authModalOpen, authModalMode, closeAuthModal, openAuthModal, loginUser, registerUser, addToast } = useApp();
+  const { authModalOpen, authModalMode, closeAuthModal, openAuthModal, loginUser, registerUser, loginDemoUser, addToast } = useApp();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -184,7 +184,7 @@ export const AuthModal: React.FC = () => {
           </button>
         </form>
 
-        <div className="mt-5 text-center text-xs text-slate-400">
+        <div className="mt-5 pt-4 border-t border-slate-800 text-center text-xs text-slate-400 space-y-3">
           {authModalMode === 'login' && (
             <p>
               Don't have an account?{' '}
@@ -223,6 +223,21 @@ export const AuthModal: React.FC = () => {
               </button>
             </p>
           )}
+
+          {/* Explicit Sandbox Demo Access */}
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={loginDemoUser}
+              className="w-full py-2 px-3 rounded-xl border border-slate-700/80 bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white font-medium text-xs transition-colors flex items-center justify-center gap-1.5"
+            >
+              <span>Explore in Sandbox Demo Mode</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-mono">Offline</span>
+            </button>
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              Sandbox demo simulates all app features without creating a Firebase account.
+            </p>
+          </div>
         </div>
       </div>
     </div>

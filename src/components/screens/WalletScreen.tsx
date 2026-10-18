@@ -239,31 +239,31 @@ export const WalletScreen: React.FC = () => {
                 <div
                   key={tx.id}
                   onClick={() => setSelectedTx(tx)}
-                  className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition-all flex items-center justify-between"
+                  className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition-all flex items-center justify-between gap-3 overflow-hidden"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     {tx.type === 'MINING_PAYOUT' && <GradientIcon icon={Pickaxe} theme="gold" size="sm" variant="boxed" />}
                     {tx.type === 'DEPOSIT' && <GradientIcon icon={ArrowDownLeft} theme="emerald" size="sm" variant="boxed" />}
                     {tx.type === 'WITHDRAWAL' && <GradientIcon icon={ArrowUpRight} theme="rose" size="sm" variant="boxed" />}
                     {tx.type === 'REFERRAL_BONUS' && <GradientIcon icon={Gift} theme="violet" size="sm" variant="boxed" />}
                     {tx.type === 'TASK_REWARD' && <GradientIcon icon={Sparkles} theme="cyan" size="sm" variant="boxed" />}
 
-                    <div>
-                      <div className="font-bold text-white text-xs">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-white text-xs truncate">
                         {tx.note || tx.type.replace('_', ' ')}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                      <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">
                         {new Date(tx.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                       </div>
                     </div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <div className={`font-mono font-bold text-xs ${isPositive ? 'text-emerald-400' : 'text-slate-200'}`}>
                       {isPositive ? '+' : '-'}{tx.amount} {tx.asset}
                     </div>
                     <div className="mt-0.5">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold ${
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold inline-block ${
                         tx.status === 'COMPLETED'
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
                           : tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW'

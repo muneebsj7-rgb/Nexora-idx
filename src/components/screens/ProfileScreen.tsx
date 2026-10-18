@@ -17,7 +17,8 @@ import {
   ShieldCheck,
   Edit2,
   Palette,
-  Check
+  Check,
+  Sparkles,
 } from 'lucide-react';
 import { AccentTheme } from '../../context/AppContext';
 import { GradientIcon } from '../ui/GradientIcon';
@@ -37,7 +38,7 @@ export const ProfileScreen: React.FC = () => {
         </div>
         <h2 className="text-xl font-bold text-white">No Miner Account Active</h2>
         <p className="text-xs text-slate-400 mt-1 mb-6">
-          Sign in or create an account to configure two-factor security, save withdrawal addresses, and track mining payouts.
+          Sign in or register an account to configure two-factor security, save withdrawal addresses, and sync your cloud mining operations.
         </p>
         <button
           onClick={() => openAuthModal('login')}
@@ -49,18 +50,32 @@ export const ProfileScreen: React.FC = () => {
     );
   }
 
-  const handleSaveName = () => {
+  const handleSaveName = async () => {
     if (nameInput.trim()) {
-      updateUser({ displayName: nameInput.trim() });
+      try {
+        await updateUser({ displayName: nameInput.trim() });
+      } catch {
+        // error already toasted
+      }
     }
     setEditingName(false);
   };
 
   const handleSendVerification = async () => {
-    setSendingVerification(true);
-    const msg = await AuthService.triggerEmailVerification(user.email);
-    setSendingVerification(false);
-    addToast('Verification Sent', msg, 'info');
+    if (user.isDemo) {
+      addToast('Sandbox Mode', 'Demo accounts cannot receive real Firebase verification emails.', 'warning');
+      return;
+    }
+
+    try {
+      setSendingVerification(true);
+      const msg = await AuthService.triggerEmailVerification(user.email);
+      addToast('Verification Sent', msg, 'info');
+    } catch (err: any) {
+      addToast('Verification Failed', err?.message || 'Could not send verification email.', 'error');
+    } finally {
+      setSendingVerification(false);
+    }
   };
 
   const handleToggle2FA = () => {
@@ -77,16 +92,51 @@ export const ProfileScreen: React.FC = () => {
     <div className="w-full max-w-4xl mx-auto space-y-6 pb-24 px-4 sm:px-6 pt-2 animate-in fade-in duration-300">
       {/* Header */}
       <div>
-        <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
-          Profile & Security Settings
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
+            Profile & Security Settings
+          </h1>
           <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
             {user.kycTier}
           </span>
-        </h1>
+          {user.isDemo ? (
+            <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              Sandbox Demo Session
+            </span>
+          ) : (
+            <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 flex items-center gap-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+              Firebase Account
+            </span>
+          )}
+        </div>
         <p className="text-xs text-slate-400 mt-1">
           Manage your account credentials, security layers, and platform connection
         </p>
       </div>
+
+      {/* Demo Warning Banner if active */}
+      {user.isDemo && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div>
+              <p className="font-bold text-white text-sm">You are in Sandbox Demo Mode</p>
+              <p className="text-slate-300 text-xs mt-0.5">
+                This session runs locally in browser memory and is <strong>not</strong> an authenticated Firebase user.
+                Cloud Firestore synchronization and cross-device persistence require a real Firebase account.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => openAuthModal('register')}
+            className="shrink-0 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-colors shadow-md"
+          >
+            Create Firebase Account
+          </button>
+        </div>
+      )}
 
       {/* User Card */}
       <div className="rounded-3xl p-6 border border-slate-800 bg-slate-900/70 backdrop-blur-md">
@@ -131,12 +181,15 @@ export const ProfileScreen: React.FC = () => {
                 </div>
               )}
               <p className="text-xs text-slate-400 font-mono mt-0.5">{user.email}</p>
-              <div className="flex items-center gap-2 mt-2">
+              <div className="flex flex-wrap items-center gap-2 mt-2">
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400">
-                  ID: {user.id}
+                  UID: {user.id}
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono">
                   Joined: {new Date(user.createdAt).toLocaleDateString([], { month: 'short', year: 'numeric' })}
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-md font-mono font-semibold bg-slate-950 border border-slate-800 text-slate-300">
+                  Ref Code: {user.referralCode}
                 </span>
               </div>
             </div>
@@ -169,9 +222,11 @@ export const ProfileScreen: React.FC = () => {
                   {user.isEmailVerified ? 'Email Confirmed & Verified' : 'Email Verification Pending'}
                 </span>
                 <span className="text-[11px] text-slate-400 block mt-0.5">
-                  {user.isEmailVerified
-                    ? 'Your email is verified for higher daily withdrawal thresholds and multi-sig security.'
-                    : 'Please verify your email address to enable maximum mining withdrawal limits.'}
+                  {user.isDemo
+                    ? 'In Sandbox Demo Mode, email verification is simulated. Connect Firebase to verify real email addresses.'
+                    : user.isEmailVerified
+                    ? 'Your email is verified with Firebase Auth for higher daily withdrawal thresholds and multi-sig security.'
+                    : 'Please verify your email address via Firebase link to enable maximum mining withdrawal limits.'}
                 </span>
               </div>
             </div>
@@ -198,135 +253,63 @@ export const ProfileScreen: React.FC = () => {
               <span>Accent Color Themes</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Customize accent glows and highlight colors while preserving the deep obsidian dark background.
+              Customize the visual palette of your Nexora Mine control terminal
             </p>
           </div>
-          <span className="text-[10px] font-mono font-semibold px-2.5 py-1 rounded-full bg-slate-950 border border-slate-800 text-slate-300 self-start sm:self-auto">
-            Active: <strong className="text-white capitalize">{accentTheme}</strong>
-          </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-          {[
-            {
-              id: 'emerald' as AccentTheme,
-              name: 'Emerald Matrix',
-              color: '#10b981',
-              desc: 'Cryptocurrency terminal green',
-              bgClass: 'bg-emerald-500',
-              textClass: 'text-emerald-400',
-              borderActive: 'border-emerald-500 bg-emerald-500/10 shadow-lg shadow-emerald-500/10',
-            },
-            {
-              id: 'violet' as AccentTheme,
-              name: 'Neon Violet',
-              color: '#8b5cf6',
-              desc: 'Cyberpunk ultraviolet purple',
-              bgClass: 'bg-violet-500',
-              textClass: 'text-violet-400',
-              borderActive: 'border-violet-500 bg-violet-500/10 shadow-lg shadow-violet-500/10',
-            },
-            {
-              id: 'blue' as AccentTheme,
-              name: 'Electric Blue',
-              color: '#3b82f6',
-              desc: 'Institutional azure blue',
-              bgClass: 'bg-blue-500',
-              textClass: 'text-blue-400',
-              borderActive: 'border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10',
-            },
-          ].map((theme) => {
-            const isSelected = accentTheme === theme.id;
-            return (
-              <button
-                key={theme.id}
-                type="button"
-                onClick={() => setAccentTheme(theme.id)}
-                className={`p-4 rounded-2xl border text-left transition-all relative flex flex-col justify-between group ${
-                  isSelected
-                    ? theme.borderActive
-                    : 'border-slate-800 bg-slate-950/60 hover:border-slate-700'
-                }`}
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="w-5 h-5 rounded-full shadow-md flex items-center justify-center shrink-0"
-                        style={{ backgroundColor: theme.color, boxShadow: `0 0 12px ${theme.color}80` }}
-                      >
-                        {isSelected && <Check className="w-3 h-3 text-slate-950 stroke-[3]" />}
-                      </span>
-                      <span className="font-bold text-white text-sm">{theme.name}</span>
-                    </div>
-
-                    {isSelected && (
-                      <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-white/10 text-white uppercase tracking-wider">
-                        Active
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    {theme.desc}
-                  </p>
-                </div>
-
-                {/* Preview sample pill */}
-                <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono">
-                  <span className="text-slate-500">Live Preview:</span>
-                  <span
-                    className="px-2 py-0.5 rounded-md font-bold"
-                    style={{
-                      color: theme.color,
-                      backgroundColor: `${theme.color}18`,
-                      borderColor: `${theme.color}40`,
-                      borderWidth: '1px',
-                    }}
-                  >
-                    +124.8 TH/s
-                  </span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="p-3 rounded-xl bg-slate-950/50 border border-slate-800/70 text-[11px] text-slate-400 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
-          <span>
-            Theme preferences are saved to your account session and persist across app reloads.
-          </span>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {([
+            { id: 'emerald', label: 'Emerald Matrix', color: 'from-emerald-400 to-teal-500', bg: 'bg-emerald-500/10 border-emerald-500/30' },
+            { id: 'violet', label: 'Neon Violet', color: 'from-violet-400 to-purple-500', bg: 'bg-violet-500/10 border-violet-500/30' },
+            { id: 'blue', label: 'Electric Blue', color: 'from-blue-400 to-cyan-500', bg: 'bg-blue-500/10 border-blue-500/30' },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setAccentTheme(t.id)}
+              className={`p-3.5 rounded-2xl border text-left transition-all flex items-center justify-between ${
+                accentTheme === t.id
+                  ? `${t.bg} border-2`
+                  : 'bg-slate-950/40 border-slate-800 hover:border-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className={`w-4 h-4 rounded-full bg-gradient-to-tr ${t.color}`} />
+                <span className="text-xs font-bold text-white">{t.label}</span>
+              </div>
+              {accentTheme === t.id && <Check className="w-4 h-4 text-emerald-400" />}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Security Settings Section with Color Graded Icons */}
+      {/* Security Layers */}
       <div className="rounded-3xl p-6 border border-slate-800 bg-slate-900/60 backdrop-blur-md space-y-4">
         <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
           <GradientIcon icon={Shield} theme="emerald" size="xs" variant="glow" />
-          <span>Security & Authentication</span>
+          <span>Security & Authentication Safeguards</span>
         </h2>
 
         {/* 2FA Toggle */}
         <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <GradientIcon icon={ShieldCheck} theme="cyan" size="sm" variant="boxed" />
+            <GradientIcon icon={Smartphone} theme="emerald" size="sm" variant="boxed" />
             <div>
               <span className="text-xs font-bold text-white block">Two-Factor Authentication (2FA)</span>
               <span className="text-[11px] text-slate-400 block mt-0.5">
-                Requires a one-time verification code on withdrawal requests and credential changes.
+                Require TOTP authentication token on withdrawal requests
               </span>
             </div>
           </div>
 
           <button
             onClick={handleToggle2FA}
-            className={`w-12 h-6 rounded-full transition-colors relative p-1 ${
+            className={`w-12 h-6 rounded-full transition-colors relative ${
               user.twoFactorEnabled ? 'bg-emerald-500' : 'bg-slate-800'
             }`}
           >
-            <span className={`block w-4 h-4 rounded-full bg-white transition-transform ${
-              user.twoFactorEnabled ? 'translate-x-6' : 'translate-x-0'
+            <div className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
+              user.twoFactorEnabled ? 'left-7' : 'left-1'
             }`} />
           </button>
         </div>
@@ -338,15 +321,25 @@ export const ProfileScreen: React.FC = () => {
             <div>
               <span className="text-xs font-bold text-white block">Password Protection</span>
               <span className="text-[11px] text-slate-400 block mt-0.5">
-                Last modified recently. Regularly update your master passphrase.
+                {user.isDemo
+                  ? 'Demo session accounts use localized placeholder credentials.'
+                  : 'Send secure reset instructions to your registered Firebase email.'}
               </span>
             </div>
           </div>
 
           <button
             onClick={async () => {
-              const msg = await AuthService.sendPasswordReset(user.email);
-              addToast('Password Reset', msg, 'info');
+              if (user.isDemo) {
+                addToast('Sandbox Mode', 'Password reset emails cannot be sent for sandbox demo accounts.', 'warning');
+                return;
+              }
+              try {
+                const msg = await AuthService.sendPasswordReset(user.email);
+                addToast('Password Reset', msg, 'info');
+              } catch (err: any) {
+                addToast('Reset Failed', err?.message || 'Could not send reset email.', 'error');
+              }
             }}
             className="py-1.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
           >
@@ -370,7 +363,21 @@ export const ProfileScreen: React.FC = () => {
 
           <div className="flex items-center justify-between">
             <span className="text-slate-400">Firebase Firestore & Auth:</span>
-            <span className="font-mono text-cyan-400 font-bold">Ready for Provisioning</span>
+            <span className={`font-mono font-bold ${AuthService.isFirebaseEnabled() ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {AuthService.isFirebaseEnabled() ? 'Connected & Active (Firebase SDK)' : 'SDK Ready (Awaiting Env Keys)'}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-slate-400">Active Session Authority:</span>
+            <span className={`font-mono font-bold ${user.isDemo ? 'text-amber-400' : 'text-cyan-400'}`}>
+              {user.isDemo ? 'Sandbox Demo Mode (Local Storage)' : 'Cloud Firestore (/users/' + user.id + ')'}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-slate-400">Firestore Security Rules:</span>
+            <span className="font-mono text-emerald-400 font-bold">rules_version 2 (Role & Field Locked)</span>
           </div>
 
           <div className="flex items-center justify-between">
@@ -380,7 +387,7 @@ export const ProfileScreen: React.FC = () => {
 
           <div className="flex items-center justify-between">
             <span className="text-slate-400">Stratum Mining Engine:</span>
-            <span className="font-mono text-amber-400 font-bold">Sandbox Hashrate Telemetry</span>
+            <span className="font-mono text-amber-400 font-bold">Simulated Telemetry Engine</span>
           </div>
         </div>
       </div>

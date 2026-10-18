@@ -49,8 +49,9 @@ interface AppContextType {
   closeAuthModal: () => void;
   loginUser: (email: string, pass: string) => Promise<void>;
   registerUser: (email: string, pass: string, name?: string, ref?: string) => Promise<void>;
+  loginDemoUser: () => void;
   logoutUser: () => Promise<void>;
-  updateUser: (updates: Partial<UserProfile>) => void;
+  updateUser: (updates: Partial<UserProfile>) => Promise<void>;
   isMobileDeviceFrame: boolean;
   toggleMobileFrame: () => void;
 }
@@ -58,7 +59,7 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const updateUser: (updates: Partial<UserProfile>) => Promise<void>;
+  const [user, setUser] = useState<UserProfile | null>(null);
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const [accentTheme, setAccentThemeState] = useState<AccentTheme>(() => {
     return (localStorage.getItem('nexora_accent_theme') as AccentTheme) || 'emerald';
@@ -78,38 +79,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [isMobileDeviceFrame, setIsMobileDeviceFrame] = useState<boolean>(false);
 
+  // Authentication State Listener
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', accentTheme);
-  }, [accentTheme]);
-  useEffect(() => {
-const unsubscribe = AuthService.onAuthStateChanged(
-(profile) => {
-setUser(profile);
-},
-(error) => {
-console.error('Firebase authentication error:', error);
-}
-);
-
-return unsubscribe;
-
-}, []);
-  
-
-  const setAccentTheme = (theme: AccentTheme) => {
-    setAccentThemeState(theme);
-    localStorage.setItem('nexora_accent_theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
-    if (user) {
-      updateUser({ accentTheme: theme });
-    }
-    const themeNames: Record<AccentTheme, string> = {
-      emerald: 'Emerald Matrix',
-      violet: 'Neon Violet',
-      blue: 'Electric Blue',
+    const unsubscribe = AuthService.onAuthStateChanged((authUser) => {
+      setUser(authUser);
+    });
+    return () => {
+      unsubscribe();
     };
-    addToast('Accent Theme Updated', `${themeNames[theme]} applied successfully.`, 'success');
-  };
+  }, []);
 
   const addToast = (title: string, message: string, type: ToastMessage['type'] = 'info') => {
     const id = 'toast_' + Date.now() + Math.random().toString(36).substring(2, 6);
@@ -121,6 +99,39 @@ return unsubscribe;
 
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const updateUser = async (updates: Partial<UserProfile>): Promise<void> => {
+    try {
+      const updated = await AuthService.updateUser(updates);
+      setUser(updated);
+      addToast('Profile Updated', 'Your profile details have been saved.', 'success');
+    } catch (error: any) {
+      const msg = error?.message || 'Failed to update profile. Please try again.';
+      addToast('Update Failed', msg, 'error');
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', accentTheme);
+  }, [accentTheme]);
+
+  const setAccentTheme = (theme: AccentTheme) => {
+    setAccentThemeState(theme);
+    localStorage.setItem('nexora_accent_theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+    if (user) {
+      updateUser({ accentTheme: theme }).catch(() => {
+        // theme is saved in localStorage anyway
+      });
+    }
+    const themeNames: Record<AccentTheme, string> = {
+      emerald: 'Emerald Matrix',
+      violet: 'Neon Violet',
+      blue: 'Electric Blue',
+    };
+    addToast('Accent Theme Updated', `${themeNames[theme]} applied successfully.`, 'success');
   };
 
   const refreshMarkets = async () => {
@@ -425,30 +436,18 @@ return unsubscribe;
     addToast('Account Created', 'Registration successful! Verification email sent.', 'success');
   };
 
+  const loginDemoUser = () => {
+    const demo = AuthService.loginAsDemo();
+    setUser(demo);
+    setAuthModalOpen(false);
+    addToast('Sandbox Demo Mode Active', 'Loaded offline demo session. Not connected to Firebase.', 'warning');
+  };
+
   const logoutUser = async () => {
     await AuthService.logout();
     setUser(null);
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
   };
-
-  const updateUser: (updates: Partial<UserProfile>) => Promise<void>;
-  try {
-    const updated = await AuthService.updateUser(updates);
-    setUser(updated);
-    addToast(
-      'Profile Updated',
-      'Your profile details have been saved.',
-      'success'
-    );
-  } catch (error) {
-    console.error('Failed to update profile:', error);
-    addToast(
-      'Update Failed',
-      'Your profile could not be updated. Please try again.',
-      'error'
-    );
-  }
-};
 
   const openAuthModal = (mode: 'login' | 'register' | 'forgot' = 'login') => {
     setAuthModalMode(mode);
@@ -497,6 +496,7 @@ return unsubscribe;
         closeAuthModal,
         loginUser,
         registerUser,
+        loginDemoUser,
         logoutUser,
         updateUser,
         isMobileDeviceFrame,

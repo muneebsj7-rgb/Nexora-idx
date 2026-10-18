@@ -128,8 +128,8 @@ export const Navigation: React.FC = () => {
                   <span className="text-xs font-bold text-white block leading-tight">
                     {user.displayName || user.email.split('@')[0]}
                   </span>
-                  <span className={`text-[10px] font-mono ${themeStyle.text}`}>
-                    {user.isEmailVerified ? 'Verified' : 'Unverified'}
+                  <span className={`text-[10px] font-mono ${user.isDemo ? 'text-amber-400' : themeStyle.text}`}>
+                    {user.isDemo ? 'Demo Mode' : user.isEmailVerified ? 'Verified' : 'Unverified'}
                   </span>
                 </div>
                 <div className={`w-7 h-7 rounded-full bg-slate-900 border flex items-center justify-center text-xs font-bold overflow-hidden ${themeStyle.text}`}>

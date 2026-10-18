@@ -11,6 +11,8 @@ export interface UserProfile {
   twoFactorEnabled: boolean;
   currency: 'USD' | 'EUR' | 'GBP' | 'JPY';
   accentTheme?: 'emerald' | 'violet' | 'blue' | 'cyan';
+  isDemo?: boolean;
+  authProvider?: 'firebase' | 'demo';
 }
 
 export interface CryptoMarket {

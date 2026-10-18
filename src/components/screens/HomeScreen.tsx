@@ -750,31 +750,31 @@ export const HomeScreen: React.FC = () => {
                 <div
                   key={tx.id}
                   onClick={() => setSelectedTx(tx)}
-                  className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 hover:border-emerald-500/40 hover:bg-slate-950 cursor-pointer flex items-center justify-between transition-all active:scale-[0.99] group"
+                  className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 hover:border-emerald-500/40 hover:bg-slate-950 cursor-pointer flex items-center justify-between gap-3 transition-all active:scale-[0.99] group overflow-hidden"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     {tx.type === 'MINING_PAYOUT' && <GradientIcon icon={Pickaxe} theme="gold" size="sm" variant="boxed" />}
                     {tx.type === 'DEPOSIT' && <GradientIcon icon={ArrowDownLeft} theme="emerald" size="sm" variant="boxed" />}
                     {tx.type === 'WITHDRAWAL' && <GradientIcon icon={ArrowUpRight} theme="rose" size="sm" variant="boxed" />}
                     {tx.type === 'REFERRAL_BONUS' && <GradientIcon icon={Gift} theme="violet" size="sm" variant="boxed" />}
                     {tx.type === 'TASK_REWARD' && <GradientIcon icon={Sparkles} theme="cyan" size="sm" variant="boxed" />}
 
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="text-xs font-bold text-white truncate group-hover:text-emerald-300 transition-colors">
                         {tx.note || tx.type.replace('_', ' ')}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                      <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">
                         {new Date(tx.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(tx.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}
                       </div>
                     </div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <div className={`font-mono font-bold text-xs ${isPositive ? 'text-emerald-400' : 'text-slate-200'}`}>
                       {isPositive ? '+' : '-'}{tx.amount} {tx.asset}
                     </div>
                     <div className="text-[10px] mt-0.5">
-                      <span className={`px-2 py-0.5 rounded-full font-mono font-semibold ${
+                      <span className={`px-2 py-0.5 rounded-full font-mono font-semibold inline-block ${
                         tx.status === 'COMPLETED'
                           ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
                           : tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW'

@@ -181,10 +181,10 @@ export const EarnScreen: React.FC = () => {
                 className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-slate-700 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div className="flex items-start gap-3">
-                  {task.category === 'SECURITY' && <GradientIcon icon={Shield} theme="emerald" size="sm" variant="boxed" className="mt-0.5" />}
-                  {task.category === 'COMMUNITY' && <GradientIcon icon={Share2} theme="violet" size="sm" variant="boxed" className="mt-0.5" />}
-                  {task.category === 'MINING' && <GradientIcon icon={Pickaxe} theme="gold" size="sm" variant="boxed" className="mt-0.5" />}
-                  {task.category !== 'SECURITY' && task.category !== 'COMMUNITY' && task.category !== 'MINING' && (
+                  {task.category === 'Security' && <GradientIcon icon={Shield} theme="emerald" size="sm" variant="boxed" className="mt-0.5" />}
+                  {task.category === 'Community' && <GradientIcon icon={Share2} theme="violet" size="sm" variant="boxed" className="mt-0.5" />}
+                  {task.category === 'Mining' && <GradientIcon icon={Pickaxe} theme="gold" size="sm" variant="boxed" className="mt-0.5" />}
+                  {task.category !== 'Security' && task.category !== 'Community' && task.category !== 'Mining' && (
                     <GradientIcon icon={Sparkles} theme="cyan" size="sm" variant="boxed" className="mt-0.5" />
                   )}
                   <div>

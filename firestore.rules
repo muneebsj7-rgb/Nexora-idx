@@ -1,0 +1,61 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    /**
+     * User profiles collection: /users/{userId}
+     *
+     * Security constraints:
+     * 1. Private access only: Each authenticated user can only read and write their own document.
+     *    Never use "allow read: if true" or public wildcards for private profiles.
+     * 2. Protected fields on creation:
+     *    - id must match auth.uid
+     *    - kycTier must default to 'None' (cannot self-grant KYC tier)
+     *    - isAdmin must be false if present
+     *    - isEmailVerified must match the verified token from Firebase Auth
+     * 3. Protected fields on update:
+     *    - Clients cannot alter kycTier, isAdmin, isEmailVerified, or createdAt.
+     * 4. Deletion:
+     *    - Direct client document deletion is disabled.
+     */
+    match /users/{userId} {
+      // Only the authenticated owner can read their own user document
+      allow read: if isOwner(userId);
+
+      // Only the owner can create their user document, enforcing default protected fields
+      allow create: if isOwner(userId)
+        && request.resource.data.id == userId
+        && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == 'None')
+        && (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false)
+        && (!('isEmailVerified' in request.resource.data) || request.resource.data.isEmailVerified == request.auth.token.email_verified);
+
+      // Only the owner can update their profile, with protected fields locked against client edits
+      allow update: if isOwner(userId)
+        && request.resource.data.id == resource.data.id
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'kycTier',
+          'isAdmin',
+          'isEmailVerified',
+          'createdAt'
+        ]));
+
+      // Deletions are forbidden from client SDK
+      allow delete: if false;
+    }
+
+    // Default deny for all other collections and documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
