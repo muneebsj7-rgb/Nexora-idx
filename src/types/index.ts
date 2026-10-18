@@ -49,6 +49,11 @@ export interface MiningSession {
   acceptedShares: number;
   rejectedShares: number;
   hardwareProfile: 'Eco' | 'Balanced' | 'Turbo Overclock';
+  userId?: string;
+  planId?: string;
+  lastSessionId?: string;
+  updatedAt?: string;
+  isSimulated?: boolean;
 }
 
 export interface MiningPlan {
@@ -119,4 +124,25 @@ export interface DailyReward {
   rewardUSD: number;
   isClaimed: boolean;
   isToday: boolean;
+  claimedAt?: string;
+  status?: 'PENDING_VERIFICATION' | 'CLAIMED' | 'LOCKED' | 'SIMULATED';
+}
+
+export interface DailyStreakClaimItem {
+  day: number;
+  date: string;
+  rewardUSD: number;
+  status: 'PENDING_VERIFICATION' | 'CLAIMED' | 'SIMULATED';
+  timestamp: string;
+}
+
+export interface DailyStreakRecord {
+  userId: string;
+  currentStreak: number;
+  lastClaimDate: string; // YYYY-MM-DD (UTC)
+  lastClaimTimestamp: string;
+  totalClaims: number;
+  claimStatus: 'PENDING_VERIFICATION' | 'CLAIMED' | 'SIMULATED';
+  claimHistory: DailyStreakClaimItem[];
+  updatedAt?: string;
 }

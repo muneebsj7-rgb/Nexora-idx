@@ -83,10 +83,11 @@ service cloud.firestore {
        * 2. Create: Authenticated owner can submit pending transaction requests only.
        *    - Must specify userId matching request.auth.uid.
        *    - Amount must be a positive number.
-       *    - Type must be either 'DEPOSIT' or 'WITHDRAWAL'.
+       *    - Type must be either 'DEPOSIT', 'WITHDRAWAL', or 'TASK_REWARD'.
        *      Clients CANNOT self-credit mining payouts or referral bonuses.
        *    - DEPOSIT requests must strictly have status 'PENDING_CONFIRMATION'.
        *    - WITHDRAWAL requests must strictly have status 'PENDING_REVIEW'.
+       *    - TASK_REWARD requests must strictly have status 'PENDING_REVIEW'.
        *    - Client cannot mark any transaction as 'COMPLETED' or 'FAILED'.
        * 3. Update: Strictly FORBIDDEN from client SDK. Users cannot alter submitted
        *    requests, change amounts, or approve their own transactions.
@@ -98,13 +99,81 @@ service cloud.firestore {
           && request.resource.data.userId == userId
           && request.resource.data.amount is number
           && request.resource.data.amount > 0
-          && request.resource.data.type in ['DEPOSIT', 'WITHDRAWAL']
+          && request.resource.data.type in ['DEPOSIT', 'WITHDRAWAL', 'TASK_REWARD']
           && (
             (request.resource.data.type == 'DEPOSIT' && request.resource.data.status == 'PENDING_CONFIRMATION')
             ||
             (request.resource.data.type == 'WITHDRAWAL' && request.resource.data.status == 'PENDING_REVIEW')
+            ||
+            (request.resource.data.type == 'TASK_REWARD' && request.resource.data.status == 'PENDING_REVIEW')
           );
         allow update, delete: if false;
+      }
+
+      /**
+       * Mining session subcollection: /users/{userId}/mining/session
+       *
+       * Security Constraints:
+       * 1. Read: Authenticated owner can read their own mining session.
+       * 2. Write (create/update): Authenticated owner can start, pause, or tune their mining session.
+       *    - Must specify userId matching auth.uid.
+       *    - Status must be a valid status ('IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE').
+       *    - Hashrate must be a valid non-negative number.
+       *    - Clients cannot tamper with userId.
+       * 3. Delete: Forbidden to maintain session history.
+       */
+      match /mining/{docId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
+          && request.resource.data.hashrateTHs is number
+          && request.resource.data.hashrateTHs >= 0;
+        allow update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
+          && request.resource.data.hashrateTHs is number
+          && request.resource.data.hashrateTHs >= 0
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['userId']));
+        allow delete: if false;
+      }
+
+      /**
+       * Rewards subcollection: /users/{userId}/rewards/{rewardDoc}
+       *
+       * Security Constraints:
+       * 1. Read: Authenticated owner can read their own daily streak & reward history.
+       * 2. Write (create/update): Authenticated owner can submit daily check-in claims.
+       *    - Must specify userId matching auth.uid.
+       *    - currentStreak must be an integer between 0 and 7.
+       *    - totalClaims must be a non-negative integer.
+       *    - Clients CANNOT award themselves verified spendable funds:
+       *      Keys like 'verifiedEarningsUSD', 'walletCredited', 'approvalStatus' are locked against client modification.
+       *    - claimStatus must be 'PENDING_VERIFICATION' or 'SIMULATED'.
+       * 3. Delete: Forbidden from client SDK.
+       */
+      match /rewards/{rewardDoc} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.currentStreak is number
+          && request.resource.data.currentStreak >= 0
+          && request.resource.data.currentStreak <= 7
+          && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
+          && (!('verifiedEarningsUSD' in request.resource.data) || request.resource.data.verifiedEarningsUSD == 0);
+        allow update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.currentStreak is number
+          && request.resource.data.currentStreak >= 0
+          && request.resource.data.currentStreak <= 7
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'userId',
+            'verifiedEarningsUSD',
+            'walletCredited',
+            'approvalStatus'
+          ]))
+          && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED']);
+        allow delete: if false;
       }
     }
 

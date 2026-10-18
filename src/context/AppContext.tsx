@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { UserProfile, CryptoMarket, MiningSession, WalletAsset, Transaction, DailyReward, EarnTask } from '../types';
+import { UserProfile, CryptoMarket, MiningSession, WalletAsset, Transaction, DailyReward, EarnTask, DailyStreakRecord } from '../types';
 import { AuthService } from '../services/authService';
 import { fetchLiveMarketTickers } from '../services/marketService';
-import { INITIAL_MINING_SESSION } from '../services/miningService';
+import { INITIAL_MINING_SESSION, MiningFirestoreService } from '../services/miningService';
 import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService } from '../services/walletService';
-import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS } from '../services/earnService';
+import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS, DailyRewardsFirestoreService } from '../services/earnService';
 import confetti from 'canvas-confetti';
 
 export type NavTab = 'home' | 'mining' | 'markets' | 'wallet' | 'earn' | 'profile';
@@ -29,13 +29,14 @@ interface AppContextType {
   lastMarketUpdate: Date;
   refreshMarkets: () => Promise<void>;
   miningSession: MiningSession;
-  toggleMining: () => void;
-  setHardwareProfile: (profile: 'Eco' | 'Balanced' | 'Turbo Overclock') => void;
+  toggleMining: () => Promise<void>;
+  setHardwareProfile: (profile: 'Eco' | 'Balanced' | 'Turbo Overclock') => Promise<void>;
   walletAssets: WalletAsset[];
   transactions: Transaction[];
   dailyRewards: DailyReward[];
+  dailyStreakRecord: DailyStreakRecord | null;
   earnTasks: EarnTask[];
-  claimDailyReward: (day: number) => void;
+  claimDailyReward: (day: number) => Promise<void>;
   claimTaskReward: (taskId: string) => void;
   submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => Promise<{ success: boolean; message: string }>;
   submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => Promise<{ success: boolean; message: string }>;
@@ -79,6 +80,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [isMobileDeviceFrame, setIsMobileDeviceFrame] = useState<boolean>(false);
 
+  const [dailyStreakRecord, setDailyStreakRecord] = useState<DailyStreakRecord | null>(null);
+
   // Authentication State Listener
   useEffect(() => {
     const unsubscribe = AuthService.onAuthStateChanged((authUser) => {
@@ -89,7 +92,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   }, []);
 
-  // Real-time Firestore sync for Wallet Balances and Transactions
+  // Real-time Firestore sync for Wallet Balances, Transactions, Mining Session & Daily Streak
   useEffect(() => {
     if (user && !user.isDemo) {
       // Baseline for real authenticated accounts: 0.00 until funded and confirmed
@@ -130,14 +133,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       );
 
+      // 3. Subscribe to users/{uid}/mining/session document
+      const unsubMining = MiningFirestoreService.subscribeUserMiningSession(
+        user.id,
+        (session) => {
+          setMiningSession(session);
+        },
+        (err) => {
+          console.warn('Firestore mining session listener notice:', err.message);
+        }
+      );
+
+      // 4. Subscribe to users/{uid}/rewards/dailyStreak document
+      const unsubStreak = DailyRewardsFirestoreService.subscribeDailyStreak(
+        user.id,
+        (record) => {
+          setDailyStreakRecord(record);
+          setDailyRewards(DailyRewardsFirestoreService.computeDailyRewardsState(record));
+        },
+        (err) => {
+          console.warn('Firestore daily streak listener notice:', err.message);
+        }
+      );
+
       return () => {
         unsubWallet();
         unsubTx();
+        unsubMining();
+        unsubStreak();
       };
     } else {
-      // Demo / sandbox session: load initial simulated demo assets & demo transactions
+      // Demo / sandbox session: load initial simulated demo assets, transactions, mining session & rewards
       setWalletAssets(INITIAL_WALLET_ASSETS);
       setTransactions(INITIAL_TRANSACTIONS);
+      setMiningSession(INITIAL_MINING_SESSION);
+      setDailyRewards(INITIAL_DAILY_REWARDS);
+      setDailyStreakRecord(null);
     }
   }, [user?.id, user?.isDemo]);
 
@@ -226,96 +257,161 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => clearInterval(timer);
   }, [miningSession.status, markets]);
 
-  const toggleMining = () => {
-    if (miningSession.status === 'ACTIVE') {
-      setMiningSession((prev) => ({
-        ...prev,
-        status: 'PAUSED',
-      }));
-      addToast('Mining Paused', 'Cloud hash allocation temporarily paused.', 'warning');
-    } else {
-      setMiningSession((prev) => ({
-        ...prev,
-        status: 'ACTIVE',
-        startedAt: new Date().toISOString(),
-      }));
-      addToast('Mining Activated', 'Cloud miner reconnected to Nexora Global Stratum.', 'success');
-    }
-  };
-
-  const setHardwareProfile = (profile: 'Eco' | 'Balanced' | 'Turbo Overclock') => {
-    let multiplier = 1.0;
-    let power = 16.2;
-    if (profile === 'Eco') {
-      multiplier = 0.85;
-      power = 13.8;
-    } else if (profile === 'Turbo Overclock') {
-      multiplier = 1.25;
-      power = 19.5;
-    }
-
-    setMiningSession((prev) => ({
-      ...prev,
-      hardwareProfile: profile,
-      hashrateTHs: Number((124.8 * multiplier).toFixed(1)),
-      efficiencyWTH: power,
-    }));
-    addToast('Hardware Profile Applied', `Switched mode to ${profile}.`, 'info');
-  };
-
-  const claimDailyReward = (day: number) => {
-    const target = dailyRewards.find((d) => d.day === day);
-    if (!target) return;
-    if (target.isClaimed) {
-      addToast('Already Claimed', `Day ${day} streak reward was already claimed.`, 'warning');
-      return;
-    }
-
-    // Trigger celebratory confetti
-    try {
-      confetti({
-        particleCount: 65,
-        spread: 60,
-        origin: { y: 0.7 },
-        colors: ['#06b6d4', '#10b981', '#f59e0b'],
-      });
-    } catch {
-      // ignore
-    }
-
-    setDailyRewards((prev) =>
-      prev.map((d) => {
-        if (d.day === day) return { ...d, isClaimed: true };
-        if (d.day === day + 1) return { ...d, isToday: true };
-        return d;
-      })
-    );
-
-    // Credit USDT balance
-    setWalletAssets((prev) =>
-      prev.map((asset) => {
-        if (asset.symbol === 'USDT') {
-          return { ...asset, balance: Number((asset.balance + target.rewardUSD).toFixed(2)) };
+  const toggleMining = async () => {
+    if (user && !user.isDemo) {
+      try {
+        const updated = await MiningFirestoreService.toggleMiningSession(user.id, miningSession);
+        setMiningSession(updated);
+        if (updated.status === 'ACTIVE') {
+          addToast('Mining Session Activated', 'Cloud miner active. Telemetry synced to Firestore.', 'success');
+        } else {
+          addToast('Mining Session Paused', 'Cloud hash allocation paused and persisted to Firestore.', 'warning');
         }
-        return asset;
-      })
-    );
+      } catch (err: any) {
+        addToast('Mining Error', err?.message || 'Failed to toggle cloud mining session.', 'error');
+      }
+    } else {
+      // Demo mode
+      if (miningSession.status === 'ACTIVE') {
+        setMiningSession((prev) => ({
+          ...prev,
+          status: 'PAUSED',
+        }));
+        addToast('Mining Paused', '[DEMO] Cloud hash allocation temporarily paused.', 'warning');
+      } else {
+        setMiningSession((prev) => ({
+          ...prev,
+          status: 'ACTIVE',
+          startedAt: new Date().toISOString(),
+        }));
+        addToast('Mining Activated', '[DEMO] Cloud miner reconnected to Stratum simulation.', 'success');
+      }
+    }
+  };
 
-    // Record transaction
-    const newTx: Transaction = {
-      id: 'tx-' + Date.now().toString().slice(-5),
-      type: 'TASK_REWARD',
-      asset: 'USDT',
-      amount: target.rewardUSD,
-      amountUSD: target.rewardUSD,
-      fee: 0,
-      status: 'COMPLETED',
-      timestamp: new Date().toISOString(),
-      note: `Daily Streak Day ${day} Check-in Bonus`,
-    };
-    setTransactions((prev) => [newTx, ...prev]);
+  const setHardwareProfile = async (profile: 'Eco' | 'Balanced' | 'Turbo Overclock') => {
+    if (user && !user.isDemo) {
+      try {
+        await MiningFirestoreService.updateHardwareProfile(user.id, profile, miningSession);
+        let multiplier = 1.0;
+        let power = 16.2;
+        if (profile === 'Eco') {
+          multiplier = 0.85;
+          power = 13.8;
+        } else if (profile === 'Turbo Overclock') {
+          multiplier = 1.25;
+          power = 19.5;
+        }
+        setMiningSession((prev) => ({
+          ...prev,
+          hardwareProfile: profile,
+          hashrateTHs: Number((124.8 * multiplier).toFixed(1)),
+          efficiencyWTH: power,
+        }));
+        addToast('Hardware Profile Applied', `Switched mode to ${profile}. Synced to Firestore.`, 'info');
+      } catch (err: any) {
+        addToast('Profile Update Error', err?.message || 'Failed to update tuning profile.', 'error');
+      }
+    } else {
+      let multiplier = 1.0;
+      let power = 16.2;
+      if (profile === 'Eco') {
+        multiplier = 0.85;
+        power = 13.8;
+      } else if (profile === 'Turbo Overclock') {
+        multiplier = 1.25;
+        power = 19.5;
+      }
 
-    addToast('Streak Bonus Claimed!', `+$${target.rewardUSD.toFixed(2)} USDT added to your wallet.`, 'success');
+      setMiningSession((prev) => ({
+        ...prev,
+        hardwareProfile: profile,
+        hashrateTHs: Number((124.8 * multiplier).toFixed(1)),
+        efficiencyWTH: power,
+      }));
+      addToast('Hardware Profile Applied', `[DEMO] Switched mode to ${profile}.`, 'info');
+    }
+  };
+
+  const claimDailyReward = async (day: number) => {
+    if (user && !user.isDemo) {
+      try {
+        const result = await DailyRewardsFirestoreService.claimDailyReward(user.id, day, dailyStreakRecord);
+        setDailyStreakRecord(result.streakRecord);
+        setDailyRewards(DailyRewardsFirestoreService.computeDailyRewardsState(result.streakRecord));
+
+        try {
+          confetti({
+            particleCount: 65,
+            spread: 60,
+            origin: { y: 0.7 },
+            colors: ['#06b6d4', '#10b981', '#f59e0b'],
+          });
+        } catch {
+          // ignore
+        }
+
+        addToast(
+          'Daily Check-in Saved!',
+          result.message,
+          'success'
+        );
+      } catch (err: any) {
+        addToast('Check-in Notice', err?.message || 'Could not claim daily reward.', 'error');
+      }
+    } else {
+      // Demo / Sandbox simulation mode
+      const target = dailyRewards.find((d) => d.day === day);
+      if (!target) return;
+      if (target.isClaimed) {
+        addToast('Already Claimed', `[DEMO] Day ${day} streak reward was already claimed.`, 'warning');
+        return;
+      }
+
+      try {
+        confetti({
+          particleCount: 65,
+          spread: 60,
+          origin: { y: 0.7 },
+          colors: ['#06b6d4', '#10b981', '#f59e0b'],
+        });
+      } catch {
+        // ignore
+      }
+
+      setDailyRewards((prev) =>
+        prev.map((d) => {
+          if (d.day === day) return { ...d, isClaimed: true };
+          if (d.day === day + 1) return { ...d, isToday: true };
+          return d;
+        })
+      );
+
+      setWalletAssets((prev) =>
+        prev.map((asset) => {
+          if (asset.symbol === 'USDT') {
+            return { ...asset, balance: Number((asset.balance + target.rewardUSD).toFixed(2)) };
+          }
+          return asset;
+        })
+      );
+
+      const demoTx: Transaction = {
+        id: 'tx-demo-' + Date.now().toString().slice(-5),
+        type: 'TASK_REWARD',
+        asset: 'USDT',
+        amount: target.rewardUSD,
+        amountUSD: target.rewardUSD,
+        fee: 0,
+        status: 'COMPLETED',
+        timestamp: new Date().toISOString(),
+        note: `[DEMO] Daily Streak Day ${day} Check-in Bonus`,
+        isDemo: true,
+      };
+      setTransactions((prev) => [demoTx, ...prev]);
+
+      addToast('Streak Bonus Claimed!', `[DEMO] +$${target.rewardUSD.toFixed(2)} USDT simulated in sandbox wallet.`, 'success');
+    }
   };
 
   const claimTaskReward = (taskId: string) => {
@@ -330,35 +426,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       prev.map((t) => (t.id === taskId ? { ...t, status: 'CLAIMED' } : t))
     );
 
-    setWalletAssets((prev) =>
-      prev.map((asset) => {
-        if (asset.symbol === task.rewardAsset) {
-          return { ...asset, balance: Number((asset.balance + task.rewardUSD).toFixed(2)) };
-        }
-        return asset;
-      })
-    );
-
-    const newTx: Transaction = {
-      id: 'tx-' + Date.now().toString().slice(-5),
-      type: 'TASK_REWARD',
-      asset: task.rewardAsset,
-      amount: task.rewardUSD,
-      amountUSD: task.rewardUSD,
-      fee: 0,
-      status: 'COMPLETED',
-      timestamp: new Date().toISOString(),
-      note: `Bounty: ${task.title}`,
-    };
-    setTransactions((prev) => [newTx, ...prev]);
-
     try {
       confetti({ particleCount: 50, spread: 50, origin: { y: 0.7 } });
     } catch {
       // ignore
     }
 
-    addToast('Bounty Claimed!', `+$${task.rewardUSD.toFixed(2)} ${task.rewardAsset} credited.`, 'success');
+    if (user && !user.isDemo) {
+      // In accordance with financial security constraints, the client never directly credits wallet balances.
+      addToast('Bounty Completed!', `Bounty marked completed. Payouts are verified and credited server-side via trusted Cloud Functions.`, 'info');
+    } else {
+      // Demo sandbox simulation
+      setWalletAssets((prev) =>
+        prev.map((asset) => {
+          if (asset.symbol === task.rewardAsset) {
+            return { ...asset, balance: Number((asset.balance + task.rewardUSD).toFixed(2)) };
+          }
+          return asset;
+        })
+      );
+      addToast('Bounty Claimed!', `[DEMO] +$${task.rewardUSD.toFixed(2)} ${task.rewardAsset} credited in sandbox wallet.`, 'success');
+    }
   };
 
   const submitDepositRequest = async (
@@ -639,6 +727,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         walletAssets,
         transactions,
         dailyRewards,
+        dailyStreakRecord,
         earnTasks,
         claimDailyReward,
         claimTaskReward,

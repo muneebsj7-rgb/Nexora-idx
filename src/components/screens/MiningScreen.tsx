@@ -18,11 +18,12 @@ import { PlanModal } from '../modals/PlanModal';
 import { GradientIcon } from '../ui/GradientIcon';
 
 export const MiningScreen: React.FC = () => {
-  const { miningSession, toggleMining, setHardwareProfile, markets } = useApp();
+  const { user, miningSession, toggleMining, setHardwareProfile, markets } = useApp();
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | undefined>(undefined);
 
   const btcPrice = markets.find((m) => m.symbol === 'BTC')?.price || 94250;
+  const isRealUser = Boolean(user && !user.isDemo);
 
   const handleOpenPlan = (planId: string) => {
     setSelectedPlanId(planId);
@@ -34,12 +35,25 @@ export const MiningScreen: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
-            Cloud Mining Terminal
-            <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-              Stratum v2
-            </span>
-          </h1>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
+              Cloud Mining Terminal
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                Stratum v2
+              </span>
+            </h1>
+            {isRealUser ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                Firestore Session Synced
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                Sandbox Simulation
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-400 mt-1">
             Real-time ASIC telemetry, hash allocation & pool reward contracts
           </p>
@@ -65,6 +79,14 @@ export const MiningScreen: React.FC = () => {
             </>
           )}
         </button>
+      </div>
+
+      {/* Simulation Transparency Notice */}
+      <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs flex items-start gap-2.5 text-slate-400">
+        <AlertCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+        <p className="text-[11px] leading-relaxed">
+          <strong className="text-slate-200">Stratum Simulation Protocol:</strong> Live hashrate telemetry, share validation, and daily yields are simulated cloud metrics. Sessions are saved directly to Firestore at <code className="text-emerald-400 font-mono">users/{'{uid}'}/mining/session</code>. Real cryptocurrency transfers require server-side node settlement.
+        </p>
       </div>
 
       {/* Main Hashrate & Rig Telemetry Monitor */}

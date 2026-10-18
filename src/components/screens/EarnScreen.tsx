@@ -16,10 +16,15 @@ import {
 import { GradientIcon } from '../ui/GradientIcon';
 
 export const EarnScreen: React.FC = () => {
-  const { user, dailyRewards, earnTasks, claimDailyReward, claimTaskReward, addToast } = useApp();
+  const { user, dailyRewards, dailyStreakRecord, earnTasks, claimDailyReward, claimTaskReward, addToast } = useApp();
 
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+
+  const isRealUser = Boolean(user && !user.isDemo);
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  const hasClaimedToday = dailyStreakRecord?.lastClaimDate === todayUTC;
 
   const referralCode = user?.referralCode || 'NEXO-9842';
   const referralLink = `https://nexoramine.io/join?ref=${referralCode}`;
@@ -38,24 +43,60 @@ export const EarnScreen: React.FC = () => {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
+  const handleClaim = async (day: number) => {
+    if (claiming) return;
+    setClaiming(true);
+    try {
+      await claimDailyReward(day);
+    } finally {
+      setClaiming(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6 pb-24 px-4 sm:px-6 pt-2 animate-in fade-in duration-300">
       {/* Header */}
-      <div>
-        <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
-          Earn & Referral Center
-          <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
-            Tier Multipliers
-          </span>
-        </h1>
-        <p className="text-xs text-slate-400 mt-1">
-          Claim daily login streak bonuses, community bounties, and invite mining partners
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
+              Earn & Referral Center
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                Tier Multipliers
+              </span>
+            </h1>
+            {isRealUser ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                Firestore Synced (UTC)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                Sandbox Demo
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 mt-1">
+            Claim daily login streak bonuses, community bounties, and invite mining partners
+          </p>
+        </div>
+
+        {isRealUser && (
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300">
+              Streak: <strong className="text-emerald-400">{dailyStreakRecord?.currentStreak || 0}/7d</strong>
+            </span>
+            <span className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300">
+              Total Claims: <strong className="text-cyan-400">{dailyStreakRecord?.totalClaims || 0}</strong>
+            </span>
+          </div>
+        )}
       </div>
 
       {/* 1. Daily Check-in Streak Banner */}
       <div className="rounded-3xl p-6 border border-emerald-500/30 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 shadow-xl relative overflow-hidden">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
           <div className="flex items-center gap-2.5">
             <GradientIcon icon={Flame} theme="flame" size="md" variant="solid" />
             <div>
@@ -63,24 +104,40 @@ export const EarnScreen: React.FC = () => {
               <p className="text-xs text-slate-400">Log in daily to claim consecutive USDT mining credits</p>
             </div>
           </div>
+
+          <div className="text-xs font-mono text-slate-400">
+            {isRealUser ? (
+              hasClaimedToday ? (
+                <span className="px-2.5 py-1 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  Claimed for Today • Next Reset: 00:00 UTC
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                  Ready to Claim Today (UTC: {todayUTC})
+                </span>
+              )
+            ) : (
+              <span className="text-slate-500">Demo Check-in Simulation</span>
+            )}
+          </div>
         </div>
 
         {/* 7 Day Blocks */}
         <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
           {dailyRewards.map((reward) => {
-            const isClickable = reward.isToday && !reward.isClaimed;
+            const isClickable = reward.isToday && !reward.isClaimed && !claiming;
             return (
               <button
                 key={reward.day}
                 type="button"
-                onClick={() => isClickable && claimDailyReward(reward.day)}
-                disabled={reward.isClaimed || !reward.isToday}
-                className={`p-3 rounded-2xl border text-center transition-all flex flex-col items-center justify-between min-h-[90px] relative ${
+                onClick={() => isClickable && handleClaim(reward.day)}
+                disabled={reward.isClaimed || !reward.isToday || claiming}
+                className={`p-3 rounded-2xl border text-center transition-all flex flex-col items-center justify-between min-h-[95px] relative ${
                   reward.isClaimed
                     ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 opacity-90'
                     : reward.isToday
-                    ? 'border-emerald-400 bg-emerald-500/20 text-white shadow-lg shadow-emerald-500/20 scale-105 animate-pulse'
-                    : 'border-slate-800 bg-slate-950/60 text-slate-400 opacity-60'
+                    ? 'border-emerald-400 bg-emerald-500/20 text-white shadow-lg shadow-emerald-500/20 scale-105 animate-pulse cursor-pointer'
+                    : 'border-slate-800 bg-slate-950/60 text-slate-500 opacity-60 cursor-not-allowed'
                 }`}
               >
                 <span className="text-[10px] font-bold uppercase tracking-wider">Day {reward.day}</span>
@@ -93,7 +150,9 @@ export const EarnScreen: React.FC = () => {
                       <CheckCircle2 className="w-3 h-3" /> Done
                     </span>
                   ) : reward.isToday ? (
-                    <span className="text-emerald-300 font-bold underline">Claim</span>
+                    <span className="text-emerald-300 font-bold underline">
+                      {claiming ? 'Saving...' : 'Claim'}
+                    </span>
                   ) : (
                     'Locked'
                   )}
@@ -101,6 +160,16 @@ export const EarnScreen: React.FC = () => {
               </button>
             );
           })}
+        </div>
+
+        {/* Verification and Security Notice */}
+        <div className="mt-4 pt-3 border-t border-slate-800/80 text-[11px] text-slate-400 flex items-center justify-between flex-wrap gap-2">
+          <span>
+            <strong className="text-slate-300">Security Policy:</strong> Claims are persisted to <code className="text-emerald-400 font-mono">users/{'{uid}'}/rewards/dailyStreak</code>. Client balance modification is blocked; claims are queued for server-side verification.
+          </span>
+          <span className="font-mono text-slate-500 text-[10px]">
+            UTC Calendar Integrity Enforced
+          </span>
         </div>
       </div>
 
