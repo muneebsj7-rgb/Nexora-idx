@@ -423,17 +423,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const loginUser = async (email: string, pass: string) => {
-    const logged = await AuthService.login(email, pass);
-    setUser(logged);
-    setAuthModalOpen(false);
-    addToast('Welcome Back', `Logged in as ${logged.displayName || logged.email}`, 'success');
+    try {
+      const logged = await AuthService.login(email, pass);
+      setUser(logged);
+      setAuthModalOpen(false);
+      addToast('Welcome Back', `Logged in as ${logged.displayName || logged.email}`, 'success');
+    } catch (error: any) {
+      const msg = error?.message || 'Login failed. Please check your credentials.';
+      addToast('Login Failed', msg, 'error');
+      throw error;
+    }
   };
 
   const registerUser = async (email: string, pass: string, name?: string, ref?: string) => {
-    const registered = await AuthService.register(email, pass, name, ref);
-    setUser(registered);
-    setAuthModalOpen(false);
-    addToast('Account Created', 'Registration successful! Verification email sent.', 'success');
+    try {
+      const registered = await AuthService.register(email, pass, name, ref);
+      setUser(registered);
+      setAuthModalOpen(false);
+      addToast('Account Created', 'Registration successful! Verification email sent.', 'success');
+    } catch (error: any) {
+      const msg = error?.message || 'Registration failed. Please check your credentials.';
+      addToast('Registration Failed', msg, 'error');
+      throw error;
+    }
   };
 
   const loginDemoUser = () => {

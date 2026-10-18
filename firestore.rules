@@ -37,17 +37,24 @@ service cloud.firestore {
         && request.resource.data.id == userId
         && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == 'None')
         && (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false)
-        && (!('isEmailVerified' in request.resource.data) || request.resource.data.isEmailVerified == request.auth.token.email_verified);
+        && (
+          !('isEmailVerified' in request.resource.data)
+          || request.resource.data.isEmailVerified == false
+          || request.resource.data.isEmailVerified == request.auth.token.email_verified
+        );
 
       // Only the owner can update their profile, with protected fields locked against client edits
       allow update: if isOwner(userId)
-        && request.resource.data.id == resource.data.id
+        && (!('id' in request.resource.data) || request.resource.data.id == userId)
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'kycTier',
           'isAdmin',
-          'isEmailVerified',
           'createdAt'
-        ]));
+        ]))
+        && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isEmailVerified'])
+          || request.resource.data.isEmailVerified == request.auth.token.email_verified
+        );
 
       // Deletions are forbidden from client SDK
       allow delete: if false;

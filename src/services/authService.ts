@@ -64,7 +64,12 @@ function formatFirebaseError(error: unknown): Error {
       case 'auth/requires-recent-login':
         return new Error('This action requires a recent authentication. Please sign in again.');
       case 'permission-denied':
-        return new Error('Permission denied. Firestore security rules prevent modifying protected account fields.');
+        return new Error(
+          'Cloud Firestore Permission Denied: Unable to write or access user profile in "users" collection. ' +
+          'Please ensure that firestore.rules from the project have been published in your Firebase Console.'
+        );
+      case 'unavailable':
+        return new Error('Cloud Firestore service is temporarily unavailable. Please retry in a moment.');
       default:
         if ('message' in error && typeof error.message === 'string') {
           return new Error(error.message);
@@ -109,43 +114,142 @@ export class AuthService {
   }
 
   /**
-   * Convert a FirebaseUser and Firestore document into an authentic UserProfile
+   * Ensures that the authenticated user has a real document in Cloud Firestore at users/{uid}.
+   * If the document does not exist (e.g. initial registration or prior failure), creates it.
+   * If it already exists, returns the persisted profile and syncs email verification if updated.
+   * NEVER silently swallows Firestore errors.
    */
-  private static async buildProfileFromFirebase(fbUser: FirebaseUser): Promise<UserProfile> {
-    let firestoreData: Partial<UserProfile> = {};
-
-    if (db) {
-      try {
-        const userDocRef = doc(db, 'users', fbUser.uid);
-        const userDocSnap = await getDoc(userDocRef);
-        if (userDocSnap.exists()) {
-          firestoreData = userDocSnap.data() as Partial<UserProfile>;
-        }
-      } catch (err) {
-        console.warn('Could not retrieve Firestore user document:', err);
-      }
+  static async ensureUserProfileDocument(
+    fbUser: FirebaseUser,
+    extra?: { displayName?: string; referredBy?: string }
+  ): Promise<UserProfile> {
+    if (!db) {
+      throw new Error(
+        'Cloud Firestore is not initialized. Please verify your VITE_FIREBASE_* environment configuration.'
+      );
     }
 
     const fallbackCode = `NEXO-${fbUser.uid.substring(0, 4).toUpperCase()}`;
+    const cleanName =
+      extra?.displayName?.trim() ||
+      fbUser.displayName ||
+      (fbUser.email ? fbUser.email.split('@')[0] : 'Miner');
 
-    const profile: UserProfile = {
+    const userDocRef = doc(db, 'users', fbUser.uid);
+    let userDocSnap;
+    try {
+      userDocSnap = await getDoc(userDocRef);
+    } catch (readError) {
+      console.error(`Error reading Firestore document users/${fbUser.uid}:`, readError);
+      throw formatFirebaseError(readError);
+    }
+
+    if (!userDocSnap.exists()) {
+      // Document does not exist in Cloud Firestore — create users/{uid} now
+      const initialProfile: UserProfile = {
+        id: fbUser.uid,
+        email: fbUser.email || '',
+        displayName: cleanName,
+        isEmailVerified: fbUser.emailVerified,
+        kycTier: 'None',
+        createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+        avatarUrl: fbUser.photoURL || undefined,
+        referralCode: fallbackCode,
+        referredBy: extra?.referredBy?.trim() || undefined,
+        twoFactorEnabled: false,
+        currency: 'USD',
+        accentTheme: 'emerald',
+        isDemo: false,
+        authProvider: 'firebase',
+      };
+
+      try {
+        await setDoc(userDocRef, {
+          id: initialProfile.id,
+          email: initialProfile.email,
+          displayName: initialProfile.displayName,
+          isEmailVerified: initialProfile.isEmailVerified,
+          kycTier: 'None',
+          createdAt: initialProfile.createdAt,
+          avatarUrl: initialProfile.avatarUrl || null,
+          referralCode: initialProfile.referralCode,
+          referredBy: initialProfile.referredBy || null,
+          twoFactorEnabled: initialProfile.twoFactorEnabled,
+          currency: initialProfile.currency,
+          accentTheme: initialProfile.accentTheme,
+          updatedAt: serverTimestamp(),
+        });
+        return initialProfile;
+      } catch (writeError) {
+        console.error(`Failed to create Firestore profile users/${fbUser.uid}:`, writeError);
+        throw formatFirebaseError(writeError);
+      }
+    }
+
+    // Document exists — hydrate profile and sync verified email if status changed in Auth
+    const firestoreData = userDocSnap.data() as Partial<UserProfile>;
+
+    if (fbUser.emailVerified && !firestoreData.isEmailVerified) {
+      try {
+        await setDoc(
+          userDocRef,
+          {
+            isEmailVerified: true,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        firestoreData.isEmailVerified = true;
+      } catch (syncErr) {
+        console.warn('Could not sync verified email status to Firestore:', syncErr);
+      }
+    }
+
+    const hydratedProfile: UserProfile = {
       id: fbUser.uid,
-      email: fbUser.email || '',
-      displayName: fbUser.displayName || firestoreData.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Miner'),
-      isEmailVerified: fbUser.emailVerified,
+      email: fbUser.email || firestoreData.email || '',
+      displayName: firestoreData.displayName || fbUser.displayName || cleanName,
+      isEmailVerified: fbUser.emailVerified || Boolean(firestoreData.isEmailVerified),
       kycTier: firestoreData.kycTier || 'None',
-      createdAt: fbUser.metadata.creationTime || firestoreData.createdAt || new Date().toISOString(),
-      avatarUrl: fbUser.photoURL || firestoreData.avatarUrl || undefined,
+      createdAt: firestoreData.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
+      avatarUrl: firestoreData.avatarUrl || fbUser.photoURL || undefined,
       referralCode: firestoreData.referralCode || fallbackCode,
       referredBy: firestoreData.referredBy,
       twoFactorEnabled: firestoreData.twoFactorEnabled ?? false,
       currency: firestoreData.currency || 'USD',
-      accentTheme: firestoreData.accentTheme,
+      accentTheme: firestoreData.accentTheme || 'emerald',
       isDemo: false,
       authProvider: 'firebase',
     };
 
-    return profile;
+    return hydratedProfile;
+  }
+
+  /**
+   * Convert a FirebaseUser and Firestore document into an authentic UserProfile
+   */
+  private static async buildProfileFromFirebase(fbUser: FirebaseUser): Promise<UserProfile> {
+    try {
+      return await this.ensureUserProfileDocument(fbUser);
+    } catch (err) {
+      console.warn('Fallback to in-memory profile representation:', err);
+      const fallbackCode = `NEXO-${fbUser.uid.substring(0, 4).toUpperCase()}`;
+      return {
+        id: fbUser.uid,
+        email: fbUser.email || '',
+        displayName: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Miner'),
+        isEmailVerified: fbUser.emailVerified,
+        kycTier: 'None',
+        createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+        avatarUrl: fbUser.photoURL || undefined,
+        referralCode: fallbackCode,
+        twoFactorEnabled: false,
+        currency: 'USD',
+        accentTheme: 'emerald',
+        isDemo: false,
+        authProvider: 'firebase',
+      };
+    }
   }
 
   /**
@@ -162,7 +266,8 @@ export class AuthService {
       try {
         await setPersistence(auth, browserLocalPersistence);
         const userCredential = await signInWithEmailAndPassword(auth, email.trim(), pass);
-        const profile = await this.buildProfileFromFirebase(userCredential.user);
+        // Ensure user document exists in Firestore (auto-creates if missing from earlier attempt)
+        const profile = await this.ensureUserProfileDocument(userCredential.user);
         this.currentUser = profile;
         localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(profile));
         this.notifyListeners(profile);
@@ -215,50 +320,16 @@ export class AuthService {
           console.warn('Could not send initial verification email:', err);
         }
 
-        const generatedRefCode = `NEXO-${fbUser.uid.substring(0, 4).toUpperCase()}`;
-        const newProfile: UserProfile = {
-          id: fbUser.uid,
-          email: fbUser.email || email.trim(),
+        // Persist initial document in Cloud Firestore - explicitly throws on failure
+        const profile = await this.ensureUserProfileDocument(fbUser, {
           displayName: cleanName,
-          isEmailVerified: fbUser.emailVerified,
-          kycTier: 'None',
-          createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
-          avatarUrl: fbUser.photoURL || undefined,
-          referralCode: generatedRefCode,
-          referredBy: refCode?.trim() || undefined,
-          twoFactorEnabled: false,
-          currency: 'USD',
-          isDemo: false,
-          authProvider: 'firebase',
-        };
+          referredBy: refCode,
+        });
 
-        // Persist initial document in Cloud Firestore
-        if (db) {
-          try {
-            const userDocRef = doc(db, 'users', fbUser.uid);
-            await setDoc(userDocRef, {
-              id: newProfile.id,
-              email: newProfile.email,
-              displayName: newProfile.displayName,
-              isEmailVerified: newProfile.isEmailVerified,
-              kycTier: 'None',
-              createdAt: newProfile.createdAt,
-              avatarUrl: newProfile.avatarUrl || null,
-              referralCode: newProfile.referralCode,
-              referredBy: newProfile.referredBy || null,
-              twoFactorEnabled: newProfile.twoFactorEnabled,
-              currency: newProfile.currency,
-              updatedAt: serverTimestamp(),
-            });
-          } catch (err) {
-            console.warn('Could not save user profile to Cloud Firestore:', err);
-          }
-        }
-
-        this.currentUser = newProfile;
-        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(newProfile));
-        this.notifyListeners(newProfile);
-        return newProfile;
+        this.currentUser = profile;
+        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(profile));
+        this.notifyListeners(profile);
+        return profile;
       } catch (error) {
         throw formatFirebaseError(error);
       }
@@ -441,17 +512,19 @@ export class AuthService {
         }
 
         // Update Cloud Firestore user document
-        if (db) {
-          const userDocRef = doc(db, 'users', auth.currentUser.uid);
-          await setDoc(
-            userDocRef,
-            {
-              ...safeClientUpdates,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
+        if (!db) {
+          throw new Error('Cloud Firestore is not initialized. Please verify Firebase project configuration.');
         }
+        const userDocRef = doc(db, 'users', auth.currentUser.uid);
+        await setDoc(
+          userDocRef,
+          {
+            id: auth.currentUser.uid,
+            ...safeClientUpdates,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
       } catch (error) {
         console.error('Firebase profile update error:', error);
         throw formatFirebaseError(error);
