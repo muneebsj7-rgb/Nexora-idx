@@ -23,7 +23,8 @@ import {
   Copy,
   Check,
   X,
-  CheckCircle2
+  CheckCircle2,
+  Calendar
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -53,54 +54,13 @@ export const HomeScreen: React.FC = () => {
     transactions,
     markets,
     isMarketsLive,
-    lastMarketUpdate,
     refreshMarkets,
     openAuthModal,
     addToast,
-    accentTheme,
+    dailyStreakRecord,
+    dailyRewards,
+    claimDailyReward,
   } = useApp();
-
-  const themeAccent = {
-    emerald: {
-      primary: '#10b981',
-      light: '#34d399',
-      borderCard: 'border-emerald-500/30',
-      glowCard: 'glow-emerald',
-      textAccent: 'text-emerald-400',
-      bgSubtle: 'bg-emerald-500/10',
-      borderSubtle: 'border-emerald-500/30',
-      btnPrimary: 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20',
-      badgeBg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-      pulseShadow: '#10b981',
-      gradientAvatar: 'from-emerald-500 to-cyan-500',
-    },
-    violet: {
-      primary: '#8b5cf6',
-      light: '#a78bfa',
-      borderCard: 'border-violet-500/30',
-      glowCard: 'glow-violet',
-      textAccent: 'text-violet-400',
-      bgSubtle: 'bg-violet-500/10',
-      borderSubtle: 'border-violet-500/30',
-      btnPrimary: 'bg-violet-500 hover:bg-violet-400 text-slate-950 shadow-violet-500/20',
-      badgeBg: 'bg-violet-500/10 text-violet-400 border-violet-500/30',
-      pulseShadow: '#8b5cf6',
-      gradientAvatar: 'from-violet-500 to-fuchsia-500',
-    },
-    blue: {
-      primary: '#3b82f6',
-      light: '#60a5fa',
-      borderCard: 'border-blue-500/30',
-      glowCard: 'glow-blue',
-      textAccent: 'text-blue-400',
-      bgSubtle: 'bg-blue-500/10',
-      borderSubtle: 'border-blue-500/30',
-      btnPrimary: 'bg-blue-500 hover:bg-blue-400 text-slate-950 shadow-blue-500/20',
-      badgeBg: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-      pulseShadow: '#3b82f6',
-      gradientAvatar: 'from-blue-500 to-cyan-500',
-    },
-  }[accentTheme];
 
   const [showBalance, setShowBalance] = useState<boolean>(true);
   const [notificationOpen, setNotificationOpen] = useState<boolean>(false);
@@ -111,11 +71,18 @@ export const HomeScreen: React.FC = () => {
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [copiedTx, setCopiedTx] = useState(false);
   const [selectedChartAsset, setSelectedChartAsset] = useState<string>('BTC');
+  const [claimingDaily, setClaimingDaily] = useState(false);
 
   // Calculate total balance in USD from wallet assets
   const totalBalanceUSD = walletAssets.reduce((acc, curr) => {
     return acc + curr.balance * curr.usdRate;
   }, 0);
+
+  const totalLockedUSD = walletAssets.reduce((acc, curr) => {
+    return acc + curr.lockedBalance * curr.usdRate;
+  }, 0);
+
+  const availableBalanceUSD = Math.max(0, totalBalanceUSD - totalLockedUSD);
 
   const btcRate = markets.find((m) => m.symbol === 'BTC')?.price || 94250;
   const totalBtcEquivalent = btcRate > 0 ? totalBalanceUSD / btcRate : 0;
@@ -141,50 +108,64 @@ export const HomeScreen: React.FC = () => {
     setTimeout(() => setRefreshingMarkets(false), 600);
   };
 
+  const handleQuickDailyClaim = async () => {
+    const todayReward = dailyRewards.find((r) => r.isToday && !r.isClaimed);
+    if (!todayReward) {
+      addToast('Daily Streak Status', 'Today’s check-in has already been recorded.', 'info');
+      return;
+    }
+
+    setClaimingDaily(true);
+    try {
+      await claimDailyReward(todayReward.day);
+    } finally {
+      setClaimingDaily(false);
+    }
+  };
+
   // Filter snapshot markets (BTC, ETH, SOL)
   const snapshotMarkets = markets.filter((m) => ['BTC', 'ETH', 'SOL'].includes(m.symbol));
+  const todayRewardItem = dailyRewards.find((r) => r.isToday);
+  const isClaimedToday = dailyStreakRecord?.lastClaimDate === new Date().toISOString().slice(0, 10);
 
   return (
-    <div className="w-full max-w-5xl mx-auto space-y-6 pb-24 px-4 sm:px-6 pt-2 animate-in fade-in duration-300">
+    <div className="w-full max-w-5xl mx-auto space-y-6 pb-24 px-2 sm:px-4 pt-1 animate-in fade-in duration-300">
       {/* 1. HEADER SECTION */}
-      <div className="flex items-center justify-between pt-2">
+      <div className="flex items-center justify-between pt-1">
         <div className="flex items-center gap-3">
           <button
             onClick={() => (user ? setActiveTab('profile') : openAuthModal('login'))}
             className="relative group transition-transform active:scale-95"
             aria-label="User Profile"
           >
-            <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${themeAccent.gradientAvatar} p-0.5 shadow-lg`}>
-              <div className="w-full h-full bg-slate-900 rounded-[14px] flex items-center justify-center overflow-hidden">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#00D6A3] to-[#25B9F3] p-0.5 shadow-sm">
+              <div className="w-full h-full bg-[#0D121C] rounded-[14px] flex items-center justify-center overflow-hidden">
                 {user?.avatarUrl ? (
                   <img src={user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
                 ) : (
-                  <Pickaxe className={`w-6 h-6 ${themeAccent.textAccent}`} />
+                  <Pickaxe className="w-6 h-6 text-[#00D6A3]" />
                 )}
               </div>
             </div>
             {user?.isEmailVerified && (
-              <span
-                className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-slate-950 flex items-center justify-center"
-                style={{ backgroundColor: themeAccent.primary }}
-              >
-                <ShieldCheck className="w-2.5 h-2.5 text-slate-950 stroke-[3]" />
+              <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-[#080B12] bg-[#00D6A3] flex items-center justify-center">
+                <ShieldCheck className="w-2.5 h-2.5 text-[#080B12] stroke-[3]" />
               </span>
             )}
           </button>
 
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="text-xs font-medium text-slate-400">
+              <span className="text-xs font-medium text-[#98A6BA]">
                 {getGreeting()},
               </span>
-              <span className="text-xs font-bold text-white">
+              <span className="text-xs font-bold text-[#F4F7FC]">
                 {user ? (user.displayName || user.email.split('@')[0]) : 'Miner Guest'}
               </span>
             </div>
-            <h1 className="text-lg sm:text-xl font-extrabold text-white tracking-tight flex items-center gap-2">
-              NEXORA <span className={themeAccent.textAccent}>MINE</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${themeAccent.badgeBg}`}>
+            <h1 className="text-lg sm:text-xl font-extrabold text-[#F4F7FC] tracking-tight flex items-center gap-2">
+              NEXORA <span className="text-[#00D6A3]">MINE</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
                 PRO POOL
               </span>
             </h1>
@@ -195,122 +176,100 @@ export const HomeScreen: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setNotificationOpen(true)}
-            className="relative p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-all active:scale-95 shadow-sm"
+            className="relative p-2.5 rounded-xl bg-[#121925] border border-[#253144] hover:border-[#36465D] text-[#98A6BA] hover:text-[#F4F7FC] transition-all active:scale-95 shadow-xs"
             aria-label="Open Notifications"
           >
-            <Bell className="w-5 h-5 text-slate-300" />
-            <span
-              className="absolute top-2 right-2 w-2 h-2 rounded-full animate-pulse"
-              style={{ backgroundColor: themeAccent.primary }}
-            />
+            <Bell className="w-5 h-5 text-[#F4F7FC]" />
+            <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#00D6A3]" />
           </button>
         </div>
       </div>
 
-      {/* 2. TOTAL MINING BALANCE CARD */}
-      <div className={`relative overflow-hidden rounded-3xl p-6 sm:p-7 border ${themeAccent.borderCard} bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 shadow-2xl ${themeAccent.glowCard}`}>
+      {/* 2. TOTAL MINING BALANCE CARD (Premium Dark Charcoal & Emerald Glow Hero) */}
+      <div className="relative overflow-hidden rounded-3xl p-6 sm:p-7 bg-gradient-to-br from-[#121925] via-[#102324] to-[#121925] border border-[#00D6A3]/30 text-[#F4F7FC] shadow-2xl glow-card">
         {/* Subtle decorative mesh background */}
-        <div
-          className="absolute top-0 right-0 w-80 h-80 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20 opacity-20"
-          style={{ backgroundColor: themeAccent.primary }}
-        />
-        <div className="absolute bottom-0 left-0 w-60 h-60 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none -ml-20 -mb-20" />
+        <div className="absolute top-0 right-0 w-80 h-80 rounded-full bg-[#00D6A3]/10 blur-3xl pointer-events-none -mr-20 -mt-20" />
+        <div className="absolute bottom-0 left-0 w-60 h-60 bg-[#25B9F3]/10 rounded-full blur-3xl pointer-events-none -ml-20 -mb-20" />
 
         <div className="relative z-10">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className={`text-xs font-bold uppercase tracking-wider ${themeAccent.textAccent}`}>
+              <span className="text-xs font-bold uppercase tracking-wider text-[#98A6BA]">
                 Total Mining Portfolio
               </span>
               <button
                 onClick={() => setShowBalance(!showBalance)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors"
+                className="text-[#98A6BA] hover:text-[#F4F7FC] p-1 rounded-lg transition-colors"
                 title={showBalance ? 'Hide balance' : 'Show balance'}
               >
                 {showBalance ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300 font-mono">
-              <span
-                className="w-2 h-2 rounded-full animate-ping inline-block"
-                style={{ backgroundColor: themeAccent.primary }}
-              />
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#182232] border border-[#253144] text-[11px] text-[#00D6A3] font-mono">
+              <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse inline-block" />
               <span>Pool: Frankfurt 01</span>
             </div>
           </div>
 
           {/* Primary Balance Figures */}
           <div className="mt-3 flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">
-            <div className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight font-mono">
+            <div className="text-3xl sm:text-4xl font-extrabold text-[#F4F7FC] tracking-tight font-mono">
               {showBalance ? `$${totalBalanceUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '••••••••'}
             </div>
-            <div className={`text-sm font-semibold ${themeAccent.textAccent} font-mono`}>
+            <div className="text-sm font-semibold text-[#98A6BA] font-mono">
               {showBalance ? `≈ ${totalBtcEquivalent.toFixed(6)} BTC` : '•••••• BTC'}
             </div>
           </div>
 
-          {/* Secondary Stats Grid with Color-Graded Micro-Badges */}
-          <div className="mt-5 pt-4 border-t border-slate-800/80 grid grid-cols-3 gap-2 sm:gap-4 text-center sm:text-left">
-            <div className="bg-slate-900/50 p-2.5 sm:p-3 rounded-2xl border border-slate-800/50 group hover:border-emerald-500/30 transition-colors">
-              <div className="flex items-center gap-1.5 justify-center sm:justify-start">
-                <GradientIcon icon={Sparkles} theme="emerald" size="xs" variant="glow" glow={false} />
-                <span className="text-[10px] text-slate-400 uppercase font-semibold block">Today's Yield</span>
-              </div>
-              <span className={`text-xs sm:text-sm font-bold ${themeAccent.textAccent} font-mono mt-1 block`}>
+          {/* Separate Labels for Available, Pending/Locked, and Simulated Earnings */}
+          <div className="mt-4 pt-4 border-t border-[#253144] grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+            <div className="bg-[#0D121C]/80 p-3 rounded-2xl border border-[#253144]">
+              <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Available Funds</span>
+              <span className="text-xs sm:text-sm font-bold text-[#F4F7FC] font-mono mt-0.5 block">
+                {showBalance ? `$${availableBalanceUSD.toFixed(2)}` : '••••'}
+              </span>
+              <span className="text-[10px] text-[#98A6BA] block">Ready for transfer</span>
+            </div>
+
+            <div className="bg-[#0D121C]/80 p-3 rounded-2xl border border-[#253144]">
+              <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Pending / In Review</span>
+              <span className="text-xs sm:text-sm font-bold text-[#F3B64B] font-mono mt-0.5 block">
+                {showBalance ? `$${totalLockedUSD.toFixed(2)}` : '••••'}
+              </span>
+              <span className="text-[10px] text-[#98A6BA] block">Escrow & verification</span>
+            </div>
+
+            <div className="bg-[#0D121C]/80 p-3 rounded-2xl border border-[#253144]">
+              <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Today's Simulated Yield</span>
+              <span className="text-xs sm:text-sm font-bold text-[#00D6A3] font-mono mt-0.5 block">
                 {showBalance ? `+$${miningSession.todayEstimatedRewardUSD.toFixed(2)}` : '••••'}
               </span>
-              <span className="text-[10px] text-slate-500 font-mono block">
-                {showBalance ? `${miningSession.todayEstimatedRewardCoin.toFixed(6)} BTC` : '••••'}
-              </span>
-            </div>
-
-            <div className="bg-slate-900/50 p-2.5 sm:p-3 rounded-2xl border border-slate-800/50 group hover:border-amber-500/30 transition-colors">
-              <div className="flex items-center gap-1.5 justify-center sm:justify-start">
-                <GradientIcon icon={Pickaxe} theme="gold" size="xs" variant="glow" glow={false} />
-                <span className="text-[10px] text-slate-400 uppercase font-semibold block">Total Earnings</span>
-              </div>
-              <span className="text-xs sm:text-sm font-bold text-white font-mono mt-1 block">
-                {showBalance ? `$${(miningSession.confirmedRewardCoin * btcRate).toFixed(2)}` : '••••'}
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono block">
-                {showBalance ? `${miningSession.confirmedRewardCoin.toFixed(6)} BTC` : '••••'}
-              </span>
-            </div>
-
-            <div className="bg-slate-900/50 p-2.5 sm:p-3 rounded-2xl border border-slate-800/50 group hover:border-cyan-500/30 transition-colors">
-              <div className="flex items-center gap-1.5 justify-center sm:justify-start">
-                <GradientIcon icon={TrendingUp} theme="cyan" size="xs" variant="glow" glow={false} />
-                <span className="text-[10px] text-slate-400 uppercase font-semibold block">Weekly Run-Rate</span>
-              </div>
-              <span className="text-xs sm:text-sm font-bold text-cyan-400 font-mono mt-1 block">
-                {showBalance ? `~$${(miningSession.todayEstimatedRewardUSD * 7).toFixed(2)}` : '••••'}
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono block">7-day projection</span>
+              <span className="text-[10px] text-[#98A6BA] block">Simulated telemetry</span>
             </div>
           </div>
 
-          {/* Balance Action Buttons with Color-Graded Icons */}
+          {/* Balance Action Buttons */}
           <div className="mt-5 flex items-center gap-3">
             <button
               onClick={() => setDepositModalOpen(true)}
-              className={`flex-1 py-2.5 px-4 rounded-xl ${themeAccent.btnPrimary} font-bold text-xs sm:text-sm transition-all shadow-lg active:scale-[0.98] flex items-center justify-center gap-2 group`}
+              className="flex-1 py-2.5 px-4 rounded-xl bg-[#00D6A3] text-[#080B12] hover:bg-[#19C784] font-bold text-xs sm:text-sm transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2 group"
             >
               <ArrowDownLeft className="w-4 h-4 stroke-[2.5px] group-hover:-translate-y-0.5 transition-transform" />
               <span>Deposit Funds</span>
             </button>
             <button
               onClick={() => setWithdrawModalOpen(true)}
-              className="flex-1 py-2.5 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-white font-bold text-xs sm:text-sm border border-slate-700 transition-all active:scale-[0.98] flex items-center justify-center gap-2 group"
+              className="flex-1 py-2.5 px-4 rounded-xl bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] font-bold text-xs sm:text-sm border border-[#253144] transition-all active:scale-[0.98] flex items-center justify-center gap-2 group"
             >
-              <ArrowUpRight className="w-4 h-4 text-rose-400 stroke-[2.5px] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+              <ArrowUpRight className="w-4 h-4 text-[#00D6A3] stroke-[2.5px] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
               <span>Withdraw</span>
             </button>
           </div>
 
-          {/* Honest Demo Disclosure notice */}
-          <div className="mt-4 flex items-center gap-1.5 text-[10px] text-slate-400">
-            <Info className="w-3.5 h-3.5 text-emerald-400/80 shrink-0" />
+          {/* Honest Simulation Disclosure */}
+          <div className="mt-4 flex items-center gap-1.5 text-[10px] text-[#98A6BA]">
+            <Info className="w-3.5 h-3.5 text-[#00D6A3] shrink-0" />
             <span>
               Simulated cloud pool environment. Confirmed balances require backend node verification.
             </span>
@@ -318,148 +277,213 @@ export const HomeScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. MINING STATUS CARD */}
-      <div className={`rounded-3xl p-5 sm:p-6 backdrop-blur-md relative overflow-hidden transition-all duration-300 ${
-        miningSession.status === 'ACTIVE'
-          ? 'border border-emerald-500/40 bg-slate-900/90 shadow-xl shadow-emerald-500/5'
-          : 'border border-slate-800 bg-slate-900/80'
-      }`}>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start sm:items-center gap-3.5">
-            <GradientIcon
-              icon={Cpu}
-              theme={miningSession.status === 'ACTIVE' ? 'emerald' : 'amber'}
-              size="lg"
-              variant="boxed"
-              glow={true}
-              iconClassName={miningSession.status === 'ACTIVE' ? 'animate-pulse' : ''}
-            />
+      {/* 3. MINING STATUS & DAILY REWARD CARDS (2-Column Grid on Tablet/Desktop) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Mining Status Card (Spans 2 cols on lg) */}
+        <div className="lg:col-span-2 rounded-3xl p-5 sm:p-6 bg-[#121925] border border-[#253144] shadow-xl relative overflow-hidden transition-all duration-300">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <GradientIcon
+                icon={Cpu}
+                theme={miningSession.status === 'ACTIVE' ? 'emerald' : 'amber'}
+                size="lg"
+                variant="boxed"
+                glow={false}
+              />
 
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                {/* Subtle Radar Pulse Indicator */}
-                <span className="relative flex h-3 w-3 items-center justify-center">
-                  {miningSession.status === 'ACTIVE' && (
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                  )}
-                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 transition-all ${
-                    miningSession.status === 'ACTIVE'
-                      ? 'bg-emerald-400 shadow-[0_0_10px_#10b981]'
-                      : 'bg-amber-400 shadow-[0_0_8px_#f59e0b]'
-                  }`} />
-                </span>
-
-                <span className="font-bold text-white text-sm">
-                  {miningSession.status === 'ACTIVE' ? 'Cloud Rig Active' : 'Mining Standby'}
-                </span>
-
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-slate-800 text-slate-300">
-                  {miningSession.algorithm}
-                </span>
-
-                {miningSession.status === 'ACTIVE' && (
-                  <span className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                    <span>LIVE HASHING</span>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Subtle Radar Pulse Indicator */}
+                  <span className="relative flex h-3 w-3 items-center justify-center">
+                    {miningSession.status === 'ACTIVE' && (
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00D6A3] opacity-75" />
+                    )}
+                    <span className={`relative inline-flex rounded-full h-2.5 w-2.5 transition-all ${
+                      miningSession.status === 'ACTIVE'
+                        ? 'bg-[#00D6A3] shadow-[0_0_8px_#00D6A3]'
+                        : 'bg-[#F3B64B] shadow-[0_0_8px_#F3B64B]'
+                    }`} />
                   </span>
-                )}
+
+                  <span className="font-bold text-[#F4F7FC] text-sm">
+                    {miningSession.status === 'ACTIVE' ? 'Cloud Rig Active' : 'Mining Standby'}
+                  </span>
+
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#0D121C] border border-[#253144] text-[#98A6BA]">
+                    {miningSession.algorithm}
+                  </span>
+
+                  {miningSession.status === 'ACTIVE' && (
+                    <span className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00D6A3] animate-pulse" />
+                      <span>LIVE HASHING</span>
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-[#98A6BA] mt-1">
+                  Stratum Pool: <span className="font-mono text-[#F4F7FC] font-semibold">{miningSession.poolName}</span>
+                </p>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
-                Stratum: <span className="font-mono text-slate-200">{miningSession.poolName}</span>
-              </p>
+            </div>
+
+            {/* Start / Pause Toggle Button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleMining}
+                className={`py-2 px-4 rounded-xl font-bold text-xs flex items-center gap-2 transition-all active:scale-95 shadow-sm ${
+                  miningSession.status === 'ACTIVE'
+                    ? 'bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30 hover:bg-[#F3B64B]/25'
+                    : 'bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12]'
+                }`}
+              >
+                {miningSession.status === 'ACTIVE' ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5" />
+                    <span>Pause Mining</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Start Mining</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={() => setActiveTab('mining')}
+                className="py-2 px-3 rounded-xl bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] text-xs font-semibold border border-[#253144] transition-colors flex items-center gap-1"
+              >
+                <span>Rig Telemetry</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
 
-          {/* Start / Stop Toggle Button & View Mining Details */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={toggleMining}
-              className={`py-2 px-4 rounded-xl font-bold text-xs flex items-center gap-2 transition-all active:scale-95 ${
-                miningSession.status === 'ACTIVE'
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
-                  : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-lg shadow-emerald-500/25'
-              }`}
-            >
-              {miningSession.status === 'ACTIVE' ? (
-                <>
-                  <Pause className="w-3.5 h-3.5" />
-                  <span>Pause Mining</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Start Mining</span>
-                </>
-              )}
-            </button>
+          {/* Live Rig Telemetry Bar */}
+          <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-[#253144]">
+            <div className="p-2.5 rounded-2xl bg-[#0D121C] border border-[#253144]">
+              <div className="flex items-center gap-1.5 text-[#98A6BA] text-[11px]">
+                <Zap className="w-3.5 h-3.5 text-[#00D6A3]" />
+                <span>Mining Speed</span>
+              </div>
+              <div className="text-base font-extrabold text-[#F4F7FC] font-mono mt-1 flex items-center gap-1.5">
+                <span>{miningSession.status === 'ACTIVE' ? `${miningSession.hashrateTHs} TH/s` : '0.0 TH/s'}</span>
+                {miningSession.status === 'ACTIVE' && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#00D6A3] animate-pulse" />
+                )}
+              </div>
+            </div>
 
-            <button
-              onClick={() => setActiveTab('mining')}
-              className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1"
-            >
-              <span>Rig Details</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
+            <div className="p-2.5 rounded-2xl bg-[#0D121C] border border-[#253144]">
+              <div className="flex items-center gap-1.5 text-[#98A6BA] text-[11px]">
+                <Clock className="w-3.5 h-3.5 text-[#25B9F3]" />
+                <span>Active Duration</span>
+              </div>
+              <div className="text-base font-extrabold text-[#F4F7FC] font-mono mt-1">
+                {miningSession.status === 'ACTIVE' ? formatDuration(miningSession.uptimeSeconds) : 'Idle'}
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-2xl bg-[#0D121C] border border-[#253144]">
+              <div className="flex items-center gap-1.5 text-[#98A6BA] text-[11px]">
+                <Sparkles className="w-3.5 h-3.5 text-[#00D6A3]" />
+                <span>Est. Daily Yield</span>
+              </div>
+              <div className="text-base font-extrabold text-[#00D6A3] font-mono mt-1">
+                ~${miningSession.todayEstimatedRewardUSD.toFixed(2)}
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-2xl bg-[#0D121C] border border-[#253144]">
+              <div className="flex items-center gap-1.5 text-[#98A6BA] text-[11px]">
+                <Cpu className="w-3.5 h-3.5 text-[#FF647C]" />
+                <span>Shares / Health</span>
+              </div>
+              <div className="text-base font-extrabold text-[#F4F7FC] font-mono mt-1">
+                {miningSession.acceptedShares} / {miningSession.temperatureC}°C
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Live Rig Telemetry Bar with Color-Graded Micro-Icons */}
-        <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-slate-800/80">
-          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60 hover:border-amber-500/30 transition-colors">
-            <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-              <GradientIcon icon={Zap} theme="gold" size="xs" variant="glow" glow={false} />
-              <span>Mining Speed</span>
+        {/* Daily Streak Check-in Quick Card (1 col on lg) */}
+        <div className="rounded-3xl p-5 bg-[#121925] border border-[#253144] shadow-xl flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between pb-3 border-b border-[#253144]">
+              <div className="flex items-center gap-2">
+                <GradientIcon icon={Calendar} theme="amber" size="sm" variant="boxed" />
+                <div>
+                  <h3 className="text-xs font-bold text-[#F4F7FC]">Daily Check-in</h3>
+                  <span className="text-[10px] text-[#98A6BA]">7-Day Streak Bonus</span>
+                </div>
+              </div>
+
+              <span className="text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
+                {dailyStreakRecord?.currentStreak || 0}/7 Days
+              </span>
             </div>
-            <div className="text-base font-extrabold text-white font-mono mt-1 flex items-center gap-1.5">
-              <span>{miningSession.status === 'ACTIVE' ? `${miningSession.hashrateTHs} TH/s` : '0.0 TH/s'}</span>
-              {miningSession.status === 'ACTIVE' && (
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+
+            <div className="mt-3">
+              <p className="text-xs text-[#98A6BA] leading-relaxed">
+                Log in daily to claim cloud hash power credits and boost your stratum shares.
+              </p>
+
+              <div className="mt-3 p-3 rounded-2xl bg-[#0D121C] border border-[#253144] flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Today's Reward</span>
+                  <span className="text-sm font-extrabold text-[#00D6A3] font-mono mt-0.5 block">
+                    +${(todayRewardItem?.rewardUSD || 1.0).toFixed(2)} USDT
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    isClaimedToday
+                      ? 'bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30'
+                      : 'bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30'
+                  }`}>
+                    {isClaimedToday ? 'Claimed Today' : 'Ready to Claim'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 pt-2">
+            <button
+              onClick={isClaimedToday ? () => setActiveTab('earn') : handleQuickDailyClaim}
+              disabled={claimingDaily}
+              className={`w-full py-2.5 px-4 rounded-xl font-bold text-xs transition-all shadow-xs flex items-center justify-center gap-1.5 ${
+                isClaimedToday
+                  ? 'bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] border border-[#253144]'
+                  : 'bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12]'
+              }`}
+            >
+              {isClaimedToday ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-[#00D6A3]" />
+                  <span>View Streak Calendar</span>
+                </>
+              ) : (
+                <>
+                  <Gift className="w-4 h-4" />
+                  <span>{claimingDaily ? 'Recording Claim...' : 'Claim Today’s Bonus'}</span>
+                </>
               )}
-            </div>
-          </div>
-
-          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60 hover:border-cyan-500/30 transition-colors">
-            <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-              <GradientIcon icon={Clock} theme="cyan" size="xs" variant="glow" glow={false} />
-              <span>Active Duration</span>
-            </div>
-            <div className="text-base font-extrabold text-white font-mono mt-1">
-              {miningSession.status === 'ACTIVE' ? formatDuration(miningSession.uptimeSeconds) : 'Idle'}
-            </div>
-          </div>
-
-          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60 hover:border-emerald-500/30 transition-colors">
-            <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-              <GradientIcon icon={Sparkles} theme="emerald" size="xs" variant="glow" glow={false} />
-              <span>Est. Daily Yield</span>
-            </div>
-            <div className="text-base font-extrabold text-emerald-400 font-mono mt-1">
-              ~${miningSession.todayEstimatedRewardUSD.toFixed(2)}
-            </div>
-          </div>
-
-          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60 hover:border-rose-500/30 transition-colors">
-            <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-              <GradientIcon icon={Cpu} theme="rose" size="xs" variant="glow" glow={false} />
-              <span>Shares / Health</span>
-            </div>
-            <div className="text-base font-extrabold text-slate-200 font-mono mt-1">
-              {miningSession.acceptedShares} / {miningSession.temperatureC}°C
-            </div>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* 4. QUICK ACTIONS RESPONSIVE GRID (4 Distinct Shortcuts with Color Graded Icons) */}
+      {/* 4. QUICK ACTIONS RESPONSIVE GRID (4 Distinct Shortcuts) */}
       <div>
-        <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+        <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider mb-3">
           Quick Access
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {/* Action 1: Wallet */}
           <button
             onClick={() => setActiveTab('wallet')}
-            className="group p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 hover:border-emerald-500/50 transition-all text-left shadow-lg active:scale-[0.98]"
+            className="group p-4 rounded-2xl bg-[#121925] border border-[#253144] hover:border-[#00D6A3]/50 hover:bg-[#182232] transition-all text-left shadow-lg active:scale-[0.98]"
           >
             <GradientIcon
               icon={Wallet}
@@ -468,10 +492,10 @@ export const HomeScreen: React.FC = () => {
               variant="boxed"
               className="mb-3 group-hover:scale-110 transition-transform"
             />
-            <span className="font-bold text-white text-sm block group-hover:text-emerald-400 transition-colors">
+            <span className="font-bold text-[#F4F7FC] text-sm block group-hover:text-[#00D6A3] transition-colors">
               Wallet
             </span>
-            <span className="text-[11px] text-slate-400 block mt-0.5">
+            <span className="text-[11px] text-[#98A6BA] block mt-0.5">
               Balances & transfers
             </span>
           </button>
@@ -479,7 +503,7 @@ export const HomeScreen: React.FC = () => {
           {/* Action 2: Mining */}
           <button
             onClick={() => setActiveTab('mining')}
-            className="group p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 hover:border-cyan-500/50 transition-all text-left shadow-lg active:scale-[0.98]"
+            className="group p-4 rounded-2xl bg-[#121925] border border-[#253144] hover:border-[#25B9F3]/50 hover:bg-[#182232] transition-all text-left shadow-lg active:scale-[0.98]"
           >
             <GradientIcon
               icon={Pickaxe}
@@ -488,10 +512,10 @@ export const HomeScreen: React.FC = () => {
               variant="boxed"
               className="mb-3 group-hover:scale-110 transition-transform"
             />
-            <span className="font-bold text-white text-sm block group-hover:text-cyan-400 transition-colors">
+            <span className="font-bold text-[#F4F7FC] text-sm block group-hover:text-[#25B9F3] transition-colors">
               Mining
             </span>
-            <span className="text-[11px] text-slate-400 block mt-0.5">
+            <span className="text-[11px] text-[#98A6BA] block mt-0.5">
               Hashrate & contracts
             </span>
           </button>
@@ -499,19 +523,19 @@ export const HomeScreen: React.FC = () => {
           {/* Action 3: Markets */}
           <button
             onClick={() => setActiveTab('markets')}
-            className="group p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 hover:border-blue-500/50 transition-all text-left shadow-lg active:scale-[0.98]"
+            className="group p-4 rounded-2xl bg-[#121925] border border-[#253144] hover:border-indigo-400/50 hover:bg-[#182232] transition-all text-left shadow-lg active:scale-[0.98]"
           >
             <GradientIcon
               icon={TrendingUp}
-              theme="blue"
+              theme="violet"
               size="md"
               variant="boxed"
               className="mb-3 group-hover:scale-110 transition-transform"
             />
-            <span className="font-bold text-white text-sm block group-hover:text-blue-400 transition-colors">
+            <span className="font-bold text-[#F4F7FC] text-sm block group-hover:text-[#8B5CF6] transition-colors">
               Markets
             </span>
-            <span className="text-[11px] text-slate-400 block mt-0.5">
+            <span className="text-[11px] text-[#98A6BA] block mt-0.5">
               Live crypto quotes
             </span>
           </button>
@@ -519,19 +543,19 @@ export const HomeScreen: React.FC = () => {
           {/* Action 4: Earn */}
           <button
             onClick={() => setActiveTab('earn')}
-            className="group p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 hover:border-amber-500/50 transition-all text-left shadow-lg active:scale-[0.98]"
+            className="group p-4 rounded-2xl bg-[#121925] border border-[#253144] hover:border-amber-400/50 hover:bg-[#182232] transition-all text-left shadow-lg active:scale-[0.98]"
           >
             <GradientIcon
               icon={Gift}
-              theme="flame"
+              theme="amber"
               size="md"
               variant="boxed"
               className="mb-3 group-hover:scale-110 transition-transform"
             />
-            <span className="font-bold text-white text-sm block group-hover:text-amber-400 transition-colors">
+            <span className="font-bold text-[#F4F7FC] text-sm block group-hover:text-[#F3B64B] transition-colors">
               Earn
             </span>
-            <span className="text-[11px] text-slate-400 block mt-0.5">
+            <span className="text-[11px] text-[#98A6BA] block mt-0.5">
               Streaks & bounties
             </span>
           </button>
@@ -539,31 +563,31 @@ export const HomeScreen: React.FC = () => {
       </div>
 
       {/* 5. LIVE MARKET SNAPSHOT */}
-      <div className="rounded-3xl p-5 border border-slate-800 bg-slate-900/60 backdrop-blur-md">
+      <div className="rounded-3xl p-5 border border-[#253144] bg-[#121925] shadow-xl">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+            <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider">
               Live Market Snapshot
             </h2>
             <span className={`inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full ${
-              isMarketsLive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-400'
+              isMarketsLive ? 'bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30' : 'bg-[#182232] text-[#98A6BA]'
             }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${isMarketsLive ? 'bg-emerald-400 animate-ping' : 'bg-slate-500'}`} />
-              {isMarketsLive ? 'Live Exchange Feed' : 'Cached Feed'}
+              <span className={`w-1.5 h-1.5 rounded-full ${isMarketsLive ? 'bg-[#00D6A3] animate-pulse' : 'bg-[#98A6BA]'}`} />
+              {isMarketsLive ? 'Live Feed' : 'Cached Feed'}
             </span>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={handleManualRefresh}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+              className="p-1.5 text-[#98A6BA] hover:text-[#F4F7FC] rounded-lg hover:bg-[#182232] transition-colors"
               title="Refresh Quotes"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${refreshingMarkets ? 'animate-spin text-emerald-400' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshingMarkets ? 'animate-spin text-[#00D6A3]' : ''}`} />
             </button>
             <button
               onClick={() => setActiveTab('markets')}
-              className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-0.5"
+              className="text-xs font-semibold text-[#00D6A3] hover:underline flex items-center gap-0.5"
             >
               <span>View All</span>
               <ChevronRight className="w-3.5 h-3.5" />
@@ -586,15 +610,15 @@ export const HomeScreen: React.FC = () => {
                     onClick={() => setSelectedChartAsset(coin.symbol)}
                     className={`cursor-pointer p-3.5 rounded-2xl border transition-all flex items-center justify-between group ${
                       isSelected
-                        ? `bg-slate-950 ${themeAccent.borderCard} shadow-md`
-                        : 'bg-slate-950/70 border-slate-800 hover:border-slate-700'
+                        ? 'bg-[#182232] border-[#00D6A3] shadow-md'
+                        : 'bg-[#0D121C] border-[#253144] hover:border-[#36465D]'
                     }`}
                   >
                     <div className="flex items-center gap-2.5">
                       <CoinIcon symbol={coin.symbol} size="sm" glow={isSelected} />
                       <div>
-                        <div className="font-bold text-white text-xs">{coin.symbol}/USDT</div>
-                        <div className="text-[10px] text-slate-400">{coin.name}</div>
+                        <div className="font-bold text-[#F4F7FC] text-xs">{coin.symbol}/USDT</div>
+                        <div className="text-[10px] text-[#98A6BA]">{coin.name}</div>
                       </div>
                     </div>
 
@@ -605,7 +629,7 @@ export const HomeScreen: React.FC = () => {
                           <Line
                             type="monotone"
                             dataKey="price"
-                            stroke={isPositive ? themeAccent.primary : '#f43f5e'}
+                            stroke={isPositive ? '#19C784' : '#FF647C'}
                             strokeWidth={1.8}
                             dot={false}
                             isAnimationActive={false}
@@ -615,10 +639,10 @@ export const HomeScreen: React.FC = () => {
                     </div>
 
                     <div className="text-right">
-                      <div className="font-mono font-bold text-xs text-white">
+                      <div className="font-mono font-bold text-xs text-[#F4F7FC]">
                         ${coin.price.toLocaleString('en-US', { minimumFractionDigits: coin.price < 10 ? 4 : 2 })}
                       </div>
-                      <div className={`text-[10px] font-mono font-semibold ${isPositive ? themeAccent.textAccent : 'text-rose-400'}`}>
+                      <div className={`text-[10px] font-mono font-semibold ${isPositive ? 'text-[#19C784]' : 'text-[#FF647C]'}`}>
                         {isPositive ? '+' : ''}{coin.change24h.toFixed(2)}%
                       </div>
                     </div>
@@ -627,7 +651,7 @@ export const HomeScreen: React.FC = () => {
               })}
             </div>
 
-            {/* 7-Day Historical Trend Line Chart using Recharts */}
+            {/* 7-Day Historical Trend Line Chart */}
             {(() => {
               const activeCoin = snapshotMarkets.find((m) => m.symbol === selectedChartAsset) || snapshotMarkets[0];
               if (!activeCoin) return null;
@@ -645,29 +669,29 @@ export const HomeScreen: React.FC = () => {
               const is7dPositive = change7dPercent >= 0;
               const high7d = Math.max(...activeCoin.sparkline);
               const low7d = Math.min(...activeCoin.sparkline);
-              const strokeColor = is7dPositive ? themeAccent.primary : '#f43f5e';
-              const gradientId = `gradient-${activeCoin.symbol}-${accentTheme}`;
+              const strokeColor = is7dPositive ? '#19C784' : '#FF647C';
+              const gradientId = `gradient-${activeCoin.symbol}-dark`;
 
               return (
-                <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/60 pb-3">
+                <div className="p-4 rounded-2xl bg-[#0D121C] border border-[#253144] space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#253144] pb-3">
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: themeAccent.primary }} />
-                      <h3 className="text-xs font-bold text-white">
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: strokeColor }} />
+                      <h3 className="text-xs font-bold text-[#F4F7FC]">
                         {activeCoin.name} ({activeCoin.symbol}/USDT) • 7-Day Price Trend
                       </h3>
                       <span className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full ${
                         is7dPositive
-                          ? themeAccent.badgeBg
-                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+                          ? 'bg-[#19C784]/15 text-[#19C784] border border-[#19C784]/30'
+                          : 'bg-[#FF647C]/15 text-[#FF647C] border border-[#FF647C]/30'
                       }`}>
                         {is7dPositive ? '+' : ''}{change7dPercent}% 7D
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-4 text-[11px] font-mono text-slate-400">
-                      <span>7D High: <strong className="text-slate-200">${high7d.toLocaleString()}</strong></span>
-                      <span>7D Low: <strong className="text-slate-200">${low7d.toLocaleString()}</strong></span>
+                    <div className="flex items-center gap-4 text-[11px] font-mono text-[#98A6BA]">
+                      <span>7D High: <strong className="text-[#F4F7FC]">${high7d.toLocaleString()}</strong></span>
+                      <span>7D Low: <strong className="text-[#F4F7FC]">${low7d.toLocaleString()}</strong></span>
                     </div>
                   </div>
 
@@ -682,10 +706,10 @@ export const HomeScreen: React.FC = () => {
                         </defs>
                         <XAxis
                           dataKey="day"
-                          stroke="#64748b"
+                          stroke="#98A6BA"
                           fontSize={10}
                           tickLine={false}
-                          axisLine={{ stroke: '#1e293b' }}
+                          axisLine={{ stroke: '#253144' }}
                         />
                         <YAxis domain={['auto', 'auto']} hide={true} />
                         <Tooltip
@@ -693,9 +717,9 @@ export const HomeScreen: React.FC = () => {
                             if (active && payload && payload.length) {
                               const dataPoint = payload[0].payload;
                               return (
-                                <div className="p-2 rounded-xl bg-slate-900 border border-slate-700 shadow-xl text-xs backdrop-blur-md">
-                                  <p className="text-[10px] text-slate-400 font-mono">{dataPoint.day}</p>
-                                  <p className="font-mono font-bold text-white mt-0.5">{dataPoint.formatted}</p>
+                                <div className="p-2.5 rounded-xl bg-[#121925] border border-[#253144] shadow-xl text-xs">
+                                  <p className="text-[10px] text-[#98A6BA] font-mono">{dataPoint.day}</p>
+                                  <p className="font-mono font-bold text-[#F4F7FC] mt-0.5">{dataPoint.formatted}</p>
                                 </div>
                               );
                             }
@@ -718,24 +742,24 @@ export const HomeScreen: React.FC = () => {
             })()}
           </div>
         ) : (
-          <div className="p-6 text-center text-xs text-slate-500">
+          <div className="p-6 text-center text-xs text-[#98A6BA]">
             Loading cryptocurrency market quotes...
           </div>
         )}
       </div>
 
       {/* 6. RECENT TRANSACTIONS */}
-      <div className="rounded-3xl p-5 border border-slate-800 bg-slate-900/60 backdrop-blur-md">
+      <div className="rounded-3xl p-5 border border-[#253144] bg-[#121925] shadow-xl">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+            <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider">
               Recent Transactions
             </h2>
-            <p className="text-[11px] text-slate-500">Latest pool payouts and wallet activity</p>
+            <p className="text-[11px] text-[#98A6BA]">Latest pool payouts and wallet activity</p>
           </div>
           <button
             onClick={() => setActiveTab('wallet')}
-            className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-0.5"
+            className="text-xs font-semibold text-[#00D6A3] hover:underline flex items-center gap-0.5"
           >
             <span>History</span>
             <ChevronRight className="w-3.5 h-3.5" />
@@ -750,7 +774,7 @@ export const HomeScreen: React.FC = () => {
                 <div
                   key={tx.id}
                   onClick={() => setSelectedTx(tx)}
-                  className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 hover:border-emerald-500/40 hover:bg-slate-950 cursor-pointer flex items-center justify-between gap-3 transition-all active:scale-[0.99] group overflow-hidden"
+                  className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] hover:border-[#00D6A3]/40 hover:bg-[#182232] cursor-pointer flex items-center justify-between gap-3 transition-all active:scale-[0.99] group overflow-hidden shadow-xs"
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     {tx.type === 'MINING_PAYOUT' && <GradientIcon icon={Pickaxe} theme="gold" size="sm" variant="boxed" />}
@@ -761,32 +785,32 @@ export const HomeScreen: React.FC = () => {
 
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold text-white truncate group-hover:text-emerald-300 transition-colors">
+                        <span className="text-xs font-bold text-[#F4F7FC] truncate group-hover:text-[#00D6A3] transition-colors">
                           {tx.note || tx.type.replace('_', ' ')}
                         </span>
                         {tx.isDemo && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
                             DEMO
                           </span>
                         )}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate">
+                      <div className="text-[10px] text-[#98A6BA] font-mono mt-0.5 truncate">
                         {new Date(tx.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(tx.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}
                       </div>
                     </div>
                   </div>
 
                   <div className="text-right shrink-0">
-                    <div className={`font-mono font-bold text-xs ${isPositive ? 'text-emerald-400' : 'text-slate-200'}`}>
+                    <div className={`font-mono font-bold text-xs ${isPositive ? 'text-[#19C784]' : 'text-[#F4F7FC]'}`}>
                       {isPositive ? '+' : '-'}{tx.amount} {tx.asset}
                     </div>
                     <div className="text-[10px] mt-0.5">
                       <span className={`px-2 py-0.5 rounded-full font-mono font-semibold inline-block ${
                         tx.status === 'COMPLETED'
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                          ? 'bg-[#19C784]/15 text-[#19C784] border border-[#19C784]/30'
                           : tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW'
-                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                          : 'bg-slate-800 text-slate-400'
+                          ? 'bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30'
+                          : 'bg-[#182232] text-[#98A6BA] border border-[#253144]'
                       }`}>
                         {tx.status.replace('_', ' ')}
                       </span>
@@ -797,69 +821,69 @@ export const HomeScreen: React.FC = () => {
             })}
           </div>
         ) : (
-          <div className="p-8 text-center text-xs text-slate-500 bg-slate-950/40 rounded-2xl border border-slate-800/50">
+          <div className="p-8 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
             No recent activity recorded yet. Start cloud mining to begin earning share rewards.
           </div>
         )}
       </div>
 
-      {/* Transaction Details Modal */}
+      {/* Transaction Details Modal in Dark Theme */}
       {selectedTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="relative w-full max-w-md bg-[#121925] border border-[#253144] rounded-3xl p-6 shadow-2xl">
+            <div className="flex items-center justify-between pb-4 border-b border-[#253144]">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                <div className="w-8 h-8 rounded-lg bg-[#00D6A3]/10 border border-[#00D6A3]/30 flex items-center justify-center text-[#00D6A3]">
                   <CheckCircle2 className="w-4 h-4" />
                 </div>
-                <h3 className="font-bold text-white text-base">Transaction Receipt</h3>
+                <h3 className="font-bold text-[#F4F7FC] text-base">Transaction Receipt</h3>
               </div>
               <button
                 onClick={() => setSelectedTx(null)}
-                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+                className="p-1.5 text-[#98A6BA] hover:text-[#F4F7FC] rounded-lg hover:bg-[#182232] transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="mt-4 space-y-3 text-xs">
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-                <span className="text-slate-400 block text-[11px]">Recorded Amount</span>
-                <span className="text-2xl font-black font-mono text-emerald-400 mt-1 block">
+              <div className="p-4 rounded-2xl bg-[#0D121C] border border-[#253144] text-center">
+                <span className="text-[#98A6BA] block text-[11px]">Recorded Amount</span>
+                <span className="text-2xl font-black font-mono text-[#F4F7FC] mt-1 block">
                   {selectedTx.amount} {selectedTx.asset}
                 </span>
-                <span className="text-[11px] text-slate-500 font-mono">
+                <span className="text-[11px] text-[#98A6BA] font-mono">
                   ≈ ${selectedTx.amountUSD.toFixed(2)} USD
                 </span>
               </div>
 
               <div className="space-y-2 pt-2">
-                <div className="flex justify-between py-1 border-b border-slate-800/80">
-                  <span className="text-slate-400">Transaction ID:</span>
-                  <span className="font-mono text-slate-200 font-semibold">{selectedTx.id}</span>
+                <div className="flex justify-between py-1.5 border-b border-[#253144]">
+                  <span className="text-[#98A6BA]">Transaction ID:</span>
+                  <span className="font-mono text-[#F4F7FC] font-semibold">{selectedTx.id}</span>
                 </div>
 
-                <div className="flex justify-between py-1 border-b border-slate-800/80">
-                  <span className="text-slate-400">Status:</span>
-                  <span className="font-mono text-emerald-400 font-bold">{selectedTx.status}</span>
+                <div className="flex justify-between py-1.5 border-b border-[#253144]">
+                  <span className="text-[#98A6BA]">Status:</span>
+                  <span className="font-mono text-[#00D6A3] font-bold">{selectedTx.status}</span>
                 </div>
 
-                <div className="flex justify-between py-1 border-b border-slate-800/80">
-                  <span className="text-slate-400">Category:</span>
-                  <span className="text-slate-200">{selectedTx.type.replace('_', ' ')}</span>
+                <div className="flex justify-between py-1.5 border-b border-[#253144]">
+                  <span className="text-[#98A6BA]">Category:</span>
+                  <span className="text-[#F4F7FC]">{selectedTx.type.replace('_', ' ')}</span>
                 </div>
 
                 {selectedTx.note && (
-                  <div className="flex justify-between py-1 border-b border-slate-800/80">
-                    <span className="text-slate-400">Description:</span>
-                    <span className="text-slate-300 text-right">{selectedTx.note}</span>
+                  <div className="flex justify-between py-1.5 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Description:</span>
+                    <span className="text-[#F4F7FC] text-right">{selectedTx.note}</span>
                   </div>
                 )}
 
                 {selectedTx.txHash && (
-                  <div className="flex items-center justify-between py-1 border-b border-slate-800/80">
-                    <span className="text-slate-400">Tx Hash:</span>
-                    <div className="flex items-center gap-1 font-mono text-cyan-400">
+                  <div className="flex items-center justify-between py-1.5 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Tx Hash:</span>
+                    <div className="flex items-center gap-1 font-mono text-[#00D6A3]">
                       <span className="truncate max-w-[150px]">{selectedTx.txHash}</span>
                       <button
                         onClick={() => {
@@ -873,15 +897,15 @@ export const HomeScreen: React.FC = () => {
                         className="p-1 hover:text-white"
                         title="Copy Tx Hash"
                       >
-                        {copiedTx ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedTx ? <Check className="w-3.5 h-3.5 text-[#19C784]" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>
                     </div>
                   </div>
                 )}
 
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-400">Recorded Time:</span>
-                  <span className="font-mono text-slate-300">
+                <div className="flex justify-between py-1.5">
+                  <span className="text-[#98A6BA]">Recorded Time:</span>
+                  <span className="font-mono text-[#F4F7FC]">
                     {new Date(selectedTx.timestamp).toLocaleString()}
                   </span>
                 </div>
@@ -889,7 +913,7 @@ export const HomeScreen: React.FC = () => {
 
               <button
                 onClick={() => setSelectedTx(null)}
-                className="w-full mt-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors"
+                className="w-full mt-4 py-2.5 rounded-xl bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] border border-[#253144] font-bold text-xs transition-colors"
               >
                 Close Receipt
               </button>

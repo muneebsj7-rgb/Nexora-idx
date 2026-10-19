@@ -113,8 +113,17 @@ function formatMiningError(error: unknown, action: string): Error {
 }
 
 /**
- * Service for persisting and streaming the authenticated user's mining session in Firestore.
+ * Service for persisting and streaming the authenticated user's simulated mining session in Firestore.
  * Path: users/{uid}/mining/session
+ *
+ * Security Architecture & Limitations:
+ * 1. Non-Financial Simulation: All mining metrics (hashrate, shares, efficiency, and yield estimates)
+ *    are purely client-side simulation preferences. They do NOT represent physical ASIC mining or proof-of-work.
+ * 2. No Spendable Minting: The client is strictly forbidden from minting spendable cryptocurrency,
+ *    awarding verified rewards, or writing to confirmed financial balances.
+ * 3. Server-Side Control Limitation: Trusted server-side session control (e.g., Stratum pool daemon or
+ *    Firebase Cloud Functions worker) is NOT currently implemented. Therefore, client-reported hashrate
+ *    and uptime are treated as untrusted simulation telemetry and must never be used as proof of work.
  */
 export class MiningFirestoreService {
   /**
@@ -353,6 +362,7 @@ export class MiningFirestoreService {
           hardwareProfile: profile,
           hashrateTHs: newHashrate,
           efficiencyWTH: power,
+          isSimulated: true,
           updatedAt: serverTimestamp(),
         },
         { merge: true }

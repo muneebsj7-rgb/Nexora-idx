@@ -100,11 +100,21 @@ function formatRewardError(error: unknown, action: string): Error {
 /**
  * Service for managing daily streak rewards in Firestore.
  * Path: users/{uid}/rewards/dailyStreak
+ *
+ * Security Architecture & Limitations:
+ * 1. Non-Authoritative Client Claims: Streak calculation, client date comparison, and reward requests
+ *    submitted by the client are NOT authoritative proof of streak continuity or eligibility.
+ * 2. Spendable Balance Protection: The client is strictly forbidden from self-crediting wallet balances or
+ *    marking claims as 'APPROVED', 'VERIFIED', or 'COMPLETED'. All submissions remain 'PENDING_VERIFICATION'.
+ * 3. Duplicate Claim Prevention Limitation: The UTC calendar check performed in the client SDK serves as a basic
+ *    UI validation gate. Authoritative, tamper-proof duplicate prevention requires server-side atomic transactions
+ *    (e.g., Firebase Cloud Functions with the Firebase Admin SDK). Because trusted server-side verification
+ *    has not yet been implemented, claims are stored as pending review requests without spendable funds.
  */
 export class DailyRewardsFirestoreService {
   /**
    * Returns current calendar day in UTC format (YYYY-MM-DD).
-   * Prevents client timezone discrepancies or manipulation.
+   * Note: Client-provided dates and device clocks are not authoritative.
    */
   static getTodayUTCDate(): string {
     return new Date().toISOString().slice(0, 10);
@@ -332,7 +342,7 @@ export class DailyRewardsFirestoreService {
       return {
         streakRecord: updatedStreakRecord,
         txId,
-        message: `Day ${nextStreak} streak bonus submitted. Status: PENDING_VERIFICATION. Funds will be audited and credited server-side.`,
+        message: `Day ${nextStreak} check-in recorded. Status: PENDING_VERIFICATION. Client balance crediting is blocked; requires trusted backend verification.`,
       };
     } catch (error) {
       console.error(`Error claiming daily reward for users/${uid}:`, error);

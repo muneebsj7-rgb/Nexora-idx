@@ -45,42 +45,42 @@ export const AuthModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-md bg-[#121925] border border-[#253144] rounded-3xl p-6 shadow-2xl overflow-hidden">
         {/* Glow Accent */}
-        <div className="absolute -top-24 -right-24 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -top-24 -right-24 w-48 h-48 bg-[#00D6A3]/10 rounded-full blur-3xl pointer-events-none" />
 
-        <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold">
+        <div className="flex items-center justify-between pb-4 border-b border-[#253144]">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#00D6A3]/10 border border-[#00D6A3]/30 flex items-center justify-center text-[#00D6A3] font-bold">
               N
             </div>
             <div>
-              <h3 className="font-bold text-white text-base">
+              <h3 className="font-bold text-[#F4F7FC] text-base">
                 {authModalMode === 'login' && 'Sign In to Nexora Mine'}
                 {authModalMode === 'register' && 'Create Miner Account'}
                 {authModalMode === 'forgot' && 'Reset Your Password'}
               </h3>
-              <p className="text-xs text-slate-400">Cloud Mining & Portfolio Terminal</p>
+              <p className="text-xs text-[#98A6BA]">Cloud Mining & Portfolio Terminal</p>
             </div>
           </div>
           <button
             onClick={closeAuthModal}
-            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            className="p-1.5 text-[#98A6BA] hover:text-[#F4F7FC] rounded-lg hover:bg-[#182232] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {error && (
-          <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+          <div className="mt-4 p-3 rounded-xl bg-[#FF647C]/10 border border-[#FF647C]/30 text-[#FF647C] text-xs flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-[#FF647C] shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {resetSuccessMsg && (
-          <div className="mt-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+          <div className="mt-4 p-3 rounded-xl bg-[#19C784]/15 border border-[#19C784]/30 text-[#19C784] text-xs flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 shrink-0 text-[#19C784]" />
             <span>{resetSuccessMsg}</span>
           </div>
         )}
@@ -88,32 +88,32 @@ export const AuthModal: React.FC = () => {
         <form onSubmit={handleSubmit} className="mt-5 space-y-3.5">
           {authModalMode === 'register' && (
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Display Name</label>
+              <label className="block text-xs font-medium text-[#98A6BA] mb-1">Display Name</label>
               <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#98A6BA]" />
                 <input
                   type="text"
                   required
                   placeholder="e.g. Satoshi Miner"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                  className="w-full bg-[#0D121C] border border-[#253144] rounded-xl py-2.5 pl-9 pr-3 text-sm text-[#F4F7FC] placeholder-[#98A6BA]/60 focus:outline-none focus:border-[#00D6A3] transition-colors"
                 />
               </div>
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Email Address</label>
+            <label className="block text-xs font-medium text-[#98A6BA] mb-1">Email Address</label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#98A6BA]" />
               <input
                 type="email"
                 required
                 placeholder="miner@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                className="w-full bg-[#0D121C] border border-[#253144] rounded-xl py-2.5 pl-9 pr-3 text-sm text-[#F4F7FC] placeholder-[#98A6BA]/60 focus:outline-none focus:border-[#00D6A3] transition-colors"
               />
             </div>
           </div>
@@ -121,26 +121,26 @@ export const AuthModal: React.FC = () => {
           {authModalMode !== 'forgot' && (
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="block text-xs font-medium text-slate-300">Password</label>
+                <label className="block text-xs font-medium text-[#98A6BA]">Password</label>
                 {authModalMode === 'login' && (
                   <button
                     type="button"
                     onClick={() => openAuthModal('forgot')}
-                    className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                    className="text-xs text-[#00D6A3] hover:underline transition-colors"
                   >
                     Forgot password?
                   </button>
                 )}
               </div>
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#98A6BA]" />
                 <input
                   type="password"
                   required
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                  className="w-full bg-[#0D121C] border border-[#253144] rounded-xl py-2.5 pl-9 pr-3 text-sm text-[#F4F7FC] placeholder-[#98A6BA]/60 focus:outline-none focus:border-[#00D6A3] transition-colors"
                 />
               </div>
             </div>
@@ -148,17 +148,17 @@ export const AuthModal: React.FC = () => {
 
           {authModalMode === 'register' && (
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Referral Code <span className="text-slate-500 font-normal">(Optional)</span>
+              <label className="block text-xs font-medium text-[#98A6BA] mb-1">
+                Referral Code <span className="text-[#98A6BA]/70 font-normal">(Optional)</span>
               </label>
               <div className="relative">
-                <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#98A6BA]" />
                 <input
                   type="text"
                   placeholder="e.g. NEXO-8291"
                   value={refCode}
                   onChange={(e) => setRefCode(e.target.value.toUpperCase())}
-                  className="w-full bg-slate-950/70 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono transition-colors"
+                  className="w-full bg-[#0D121C] border border-[#253144] rounded-xl py-2.5 pl-9 pr-3 text-sm text-[#F4F7FC] placeholder-[#98A6BA]/60 focus:outline-none focus:border-[#00D6A3] font-mono transition-colors"
                 />
               </div>
             </div>
@@ -167,10 +167,10 @@ export const AuthModal: React.FC = () => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full mt-4 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-slate-950 font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-cyan-500/20 active:scale-[0.99]"
+            className="w-full mt-4 bg-[#00D6A3] hover:bg-[#19C784] disabled:opacity-50 text-[#080B12] font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-[#00D6A3]/20 active:scale-[0.99]"
           >
             {loading ? (
-              <span className="inline-block w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+              <span className="inline-block w-4 h-4 border-2 border-[#080B12] border-t-transparent rounded-full animate-spin" />
             ) : (
               <>
                 <span>
@@ -184,14 +184,14 @@ export const AuthModal: React.FC = () => {
           </button>
         </form>
 
-        <div className="mt-5 pt-4 border-t border-slate-800 text-center text-xs text-slate-400 space-y-3">
+        <div className="mt-5 pt-4 border-t border-[#253144] text-center text-xs text-[#98A6BA] space-y-3">
           {authModalMode === 'login' && (
             <p>
               Don't have an account?{' '}
               <button
                 type="button"
                 onClick={() => openAuthModal('register')}
-                className="font-semibold text-cyan-400 hover:underline"
+                className="font-semibold text-[#00D6A3] hover:underline"
               >
                 Create one now
               </button>
@@ -204,7 +204,7 @@ export const AuthModal: React.FC = () => {
               <button
                 type="button"
                 onClick={() => openAuthModal('login')}
-                className="font-semibold text-cyan-400 hover:underline"
+                className="font-semibold text-[#00D6A3] hover:underline"
               >
                 Sign in here
               </button>
@@ -217,7 +217,7 @@ export const AuthModal: React.FC = () => {
               <button
                 type="button"
                 onClick={() => openAuthModal('login')}
-                className="font-semibold text-cyan-400 hover:underline"
+                className="font-semibold text-[#00D6A3] hover:underline"
               >
                 Back to Sign In
               </button>
@@ -229,12 +229,12 @@ export const AuthModal: React.FC = () => {
             <button
               type="button"
               onClick={loginDemoUser}
-              className="w-full py-2 px-3 rounded-xl border border-slate-700/80 bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white font-medium text-xs transition-colors flex items-center justify-center gap-1.5"
+              className="w-full py-2 px-3 rounded-xl border border-[#253144] bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] font-medium text-xs transition-colors flex items-center justify-center gap-1.5"
             >
               <span>Explore in Sandbox Demo Mode</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-mono">Offline</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#F3B64B]/15 text-[#F3B64B] font-mono">Offline</span>
             </button>
-            <p className="text-[11px] text-slate-500 mt-1.5">
+            <p className="text-[11px] text-[#98A6BA]/80 mt-1.5">
               Sandbox demo simulates all app features without creating a Firebase account.
             </p>
           </div>

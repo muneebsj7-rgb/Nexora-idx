@@ -5,6 +5,8 @@ import { fetchLiveMarketTickers } from '../services/marketService';
 import { INITIAL_MINING_SESSION, MiningFirestoreService } from '../services/miningService';
 import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService } from '../services/walletService';
 import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS, DailyRewardsFirestoreService } from '../services/earnService';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import confetti from 'canvas-confetti';
 
 export type NavTab = 'home' | 'mining' | 'markets' | 'wallet' | 'earn' | 'profile';
@@ -37,7 +39,7 @@ interface AppContextType {
   dailyStreakRecord: DailyStreakRecord | null;
   earnTasks: EarnTask[];
   claimDailyReward: (day: number) => Promise<void>;
-  claimTaskReward: (taskId: string) => void;
+  claimTaskReward: (taskId: string) => Promise<void> | void;
   submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => Promise<{ success: boolean; message: string }>;
   submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => Promise<{ success: boolean; message: string }>;
   submitPlanOrder: (planName: string, priceUSD: number) => { success: boolean; message: string };
@@ -414,7 +416,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const claimTaskReward = (taskId: string) => {
+  const claimTaskReward = async (taskId: string) => {
     const task = earnTasks.find((t) => t.id === taskId);
     if (!task) return;
     if (task.status === 'CLAIMED') {
@@ -433,8 +435,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     if (user && !user.isDemo) {
-      // In accordance with financial security constraints, the client never directly credits wallet balances.
-      addToast('Bounty Completed!', `Bounty marked completed. Payouts are verified and credited server-side via trusted Cloud Functions.`, 'info');
+      try {
+        const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        if (db) {
+          const txDocRef = doc(db, 'users', user.id, 'transactions', txId);
+          await setDoc(txDocRef, {
+            id: txId,
+            userId: user.id,
+            type: 'TASK_REWARD',
+            asset: task.rewardAsset,
+            amount: task.rewardUSD,
+            amountUSD: task.rewardUSD,
+            fee: 0,
+            status: 'PENDING_REVIEW',
+            timestamp: new Date().toISOString(),
+            note: `Task Bounty: ${task.title} (Pending Verification)`,
+            createdAt: serverTimestamp(),
+          });
+        }
+        addToast(
+          'Bounty Submitted',
+          `Bounty for "${task.title}" saved in Firestore as PENDING_REVIEW. Client balance crediting is blocked; requires trusted verification.`,
+          'info'
+        );
+      } catch (err: any) {
+        console.error('Error submitting task reward request:', err);
+        addToast('Bounty Request Notice', err?.message || 'Could not record bounty request in Firestore.', 'error');
+      }
     } else {
       // Demo sandbox simulation
       setWalletAssets((prev) =>
@@ -483,7 +510,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         addToast(
           'Deposit Request Saved',
-          `Deposit for ${amount} ${assetSymbol} saved to Firestore as PENDING_CONFIRMATION. Balances will be credited once confirmed by network nodes.`,
+          `Deposit request for ${amount} ${assetSymbol} saved to Firestore as PENDING_CONFIRMATION. Balances remain unchanged until confirmed and processed.`,
           'info'
         );
         return {
@@ -558,7 +585,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
 
         // Client cannot modify wallet balances directly.
-        // Balances are read-only and debited by trusted backend (Firebase Cloud Functions / Admin SDK)
+        // Balances are read-only and debited by trusted backend (e.g., Firebase Cloud Functions / Admin SDK)
         setTransactions((prev) => {
           if (prev.some((t) => t.id === newTx.id)) return prev;
           return [newTx, ...prev];
@@ -566,7 +593,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         addToast(
           'Withdrawal Request Queued',
-          `Withdrawal for ${amount} ${assetSymbol} recorded in Firestore as PENDING_REVIEW. Trusted backend will audit and debit balance securely.`,
+          `Withdrawal request for ${amount} ${assetSymbol} recorded in Firestore as PENDING_REVIEW. Client balance modifications are blocked; requests remain pending.`,
           'warning'
         );
         return {
@@ -623,7 +650,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const submitPlanOrder = (planName: string, priceUSD: number) => {
-    // Check USDT balance
+    // 1. Financial Security: Real authenticated accounts cannot make client-side balance changes or fake payouts.
+    // Cloud contract order processing requires trusted server-side order and payment settlement.
+    if (user && !user.isDemo) {
+      return {
+        success: false,
+        message: 'Cloud contract purchase for authenticated accounts is disabled until trusted server-side order processing is implemented. Direct client balance changes and hashrate upgrades are blocked for security.',
+      };
+    }
+
+    // 2. Demo Sandbox simulation mode
     const usdt = walletAssets.find((a) => a.symbol === 'USDT');
     if (!usdt || usdt.balance < priceUSD) {
       return { success: false, message: `Insufficient USDT balance ($${priceUSD} required). Please deposit USDT first.` };
@@ -633,27 +669,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       prev.map((a) => (a.symbol === 'USDT' ? { ...a, balance: Number((a.balance - priceUSD).toFixed(2)) } : a))
     );
 
-    // Boost hashrate
+    // Boost simulated hashrate
     setMiningSession((prev) => ({
       ...prev,
       hashrateTHs: Number((prev.hashrateTHs + 50).toFixed(1)),
     }));
 
-    const newTx: Transaction = {
-      id: 'tx-' + Date.now().toString().slice(-5),
-      type: 'MINING_PAYOUT',
+    const demoTx: Transaction = {
+      id: 'tx-demo-' + Date.now().toString().slice(-5),
+      type: 'TASK_REWARD',
       asset: 'USDT',
       amount: priceUSD,
       amountUSD: priceUSD,
       fee: 0,
       status: 'COMPLETED',
       timestamp: new Date().toISOString(),
-      note: `Hashrate Contract Allocation: ${planName}`,
+      note: `[DEMO] Hashrate Contract Allocation: ${planName}`,
+      isDemo: true,
     };
-    setTransactions((prev) => [newTx, ...prev]);
+    setTransactions((prev) => [demoTx, ...prev]);
 
-    addToast('Plan Activated!', `Allocated hashpower for ${planName}.`, 'success');
-    return { success: true, message: 'Cloud hashrate plan activated successfully!' };
+    addToast('Demo Plan Activated!', `[DEMO] Allocated simulated hashpower for ${planName}.`, 'success');
+    return { success: true, message: '[DEMO] Cloud hashrate plan activated in sandbox mode!' };
   };
 
   const loginUser = async (email: string, pass: string) => {

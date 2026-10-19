@@ -383,7 +383,7 @@ export class WalletFirestoreService {
    * Security constraints:
    * - Status must strictly be PENDING_REVIEW
    * - Client cannot self-approve or mark as completed
-   * - Wallet balances are read-only on client; trusted backend Cloud Function debits balance
+   * - Wallet balances are read-only on client; updating balances requires a trusted backend (e.g., Firebase Cloud Functions with Admin SDK)
    */
   static async submitWithdrawalRequest(
     uid: string,

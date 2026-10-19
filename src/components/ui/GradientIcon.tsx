@@ -24,7 +24,7 @@ export interface GradientIconProps {
 
 export const GradientIcon: React.FC<GradientIconProps> = ({
   icon: Icon,
-  theme = 'emerald',
+  theme = 'blue',
   size = 'md',
   variant = 'boxed',
   glow = true,
@@ -43,99 +43,99 @@ export const GradientIcon: React.FC<GradientIconProps> = ({
       auraBg: string;
     }
   > = {
-    emerald: {
-      borderGrad: 'from-emerald-400 via-teal-400 to-cyan-500',
-      subtleBg: 'bg-gradient-to-br from-emerald-500/20 via-teal-500/10 to-slate-900 border-emerald-500/30',
-      solidBg: 'bg-gradient-to-tr from-emerald-500 via-teal-500 to-cyan-500 text-slate-950',
-      textColor: 'text-emerald-400',
-      svgUrl: 'url(#icon-grad-emerald)',
-      glowShadow: 'shadow-emerald-500/30',
-      auraBg: 'bg-emerald-500/20',
+    blue: {
+      borderGrad: 'from-[#246BFD] via-blue-500 to-[#16C7D9]',
+      subtleBg: 'bg-blue-50/80 border-blue-200/70 text-[#246BFD]',
+      solidBg: 'bg-gradient-to-tr from-[#246BFD] to-[#16C7D9] text-white',
+      textColor: 'text-[#246BFD]',
+      svgUrl: 'url(#icon-grad-blue)',
+      glowShadow: 'shadow-blue-500/20',
+      auraBg: 'bg-blue-500/15',
     },
     cyan: {
-      borderGrad: 'from-cyan-400 via-sky-400 to-blue-500',
-      subtleBg: 'bg-gradient-to-br from-cyan-500/20 via-sky-500/10 to-slate-900 border-cyan-500/30',
-      solidBg: 'bg-gradient-to-tr from-cyan-400 via-sky-500 to-blue-500 text-slate-950',
-      textColor: 'text-cyan-400',
+      borderGrad: 'from-[#16C7D9] via-cyan-400 to-[#246BFD]',
+      subtleBg: 'bg-cyan-50/80 border-cyan-200/70 text-[#0891B2]',
+      solidBg: 'bg-gradient-to-tr from-[#16C7D9] to-[#246BFD] text-white',
+      textColor: 'text-[#0891B2]',
       svgUrl: 'url(#icon-grad-cyan)',
-      glowShadow: 'shadow-cyan-500/30',
-      auraBg: 'bg-cyan-500/20',
+      glowShadow: 'shadow-cyan-500/20',
+      auraBg: 'bg-cyan-500/15',
+    },
+    emerald: {
+      borderGrad: 'from-[#16A673] via-emerald-400 to-[#16C7D9]',
+      subtleBg: 'bg-emerald-50/80 border-emerald-200/70 text-[#16A673]',
+      solidBg: 'bg-gradient-to-tr from-[#16A673] to-teal-500 text-white',
+      textColor: 'text-[#16A673]',
+      svgUrl: 'url(#icon-grad-emerald)',
+      glowShadow: 'shadow-emerald-500/20',
+      auraBg: 'bg-emerald-500/15',
     },
     violet: {
-      borderGrad: 'from-violet-400 via-purple-400 to-fuchsia-500',
-      subtleBg: 'bg-gradient-to-br from-violet-500/20 via-purple-500/10 to-slate-900 border-violet-500/30',
-      solidBg: 'bg-gradient-to-tr from-violet-400 via-purple-500 to-fuchsia-500 text-slate-950',
-      textColor: 'text-violet-400',
+      borderGrad: 'from-[#7C3AED] via-purple-500 to-indigo-500',
+      subtleBg: 'bg-purple-50/80 border-purple-200/70 text-[#7C3AED]',
+      solidBg: 'bg-gradient-to-tr from-[#7C3AED] to-indigo-500 text-white',
+      textColor: 'text-[#7C3AED]',
       svgUrl: 'url(#icon-grad-violet)',
-      glowShadow: 'shadow-violet-500/30',
-      auraBg: 'bg-violet-500/20',
-    },
-    blue: {
-      borderGrad: 'from-blue-400 via-indigo-400 to-cyan-500',
-      subtleBg: 'bg-gradient-to-br from-blue-500/20 via-indigo-500/10 to-slate-900 border-blue-500/30',
-      solidBg: 'bg-gradient-to-tr from-blue-400 via-indigo-500 to-cyan-500 text-slate-950',
-      textColor: 'text-blue-400',
-      svgUrl: 'url(#icon-grad-blue)',
-      glowShadow: 'shadow-blue-500/30',
-      auraBg: 'bg-blue-500/20',
+      glowShadow: 'shadow-purple-500/20',
+      auraBg: 'bg-purple-500/15',
     },
     amber: {
-      borderGrad: 'from-amber-400 via-yellow-400 to-orange-500',
-      subtleBg: 'bg-gradient-to-br from-amber-500/20 via-yellow-500/10 to-slate-900 border-amber-500/30',
-      solidBg: 'bg-gradient-to-tr from-amber-400 via-yellow-500 to-orange-500 text-slate-950',
-      textColor: 'text-amber-400',
+      borderGrad: 'from-[#E9A23B] via-amber-400 to-orange-500',
+      subtleBg: 'bg-amber-50/80 border-amber-200/70 text-[#D97706]',
+      solidBg: 'bg-gradient-to-tr from-[#E9A23B] to-orange-500 text-white',
+      textColor: 'text-[#D97706]',
       svgUrl: 'url(#icon-grad-amber)',
-      glowShadow: 'shadow-amber-500/30',
-      auraBg: 'bg-amber-500/20',
+      glowShadow: 'shadow-amber-500/20',
+      auraBg: 'bg-amber-500/15',
     },
     rose: {
-      borderGrad: 'from-rose-400 via-pink-400 to-red-500',
-      subtleBg: 'bg-gradient-to-br from-rose-500/20 via-pink-500/10 to-slate-900 border-rose-500/30',
-      solidBg: 'bg-gradient-to-tr from-rose-400 via-pink-500 to-red-500 text-slate-950',
-      textColor: 'text-rose-400',
+      borderGrad: 'from-[#E05260] via-rose-400 to-red-500',
+      subtleBg: 'bg-rose-50/80 border-rose-200/70 text-[#E05260]',
+      solidBg: 'bg-gradient-to-tr from-[#E05260] to-red-500 text-white',
+      textColor: 'text-[#E05260]',
       svgUrl: 'url(#icon-grad-rose)',
-      glowShadow: 'shadow-rose-500/30',
-      auraBg: 'bg-rose-500/20',
+      glowShadow: 'shadow-rose-500/20',
+      auraBg: 'bg-rose-500/15',
     },
     gold: {
-      borderGrad: 'from-yellow-300 via-amber-400 to-amber-600',
-      subtleBg: 'bg-gradient-to-br from-amber-500/20 via-yellow-500/10 to-slate-900 border-yellow-500/30',
-      solidBg: 'bg-gradient-to-tr from-yellow-300 via-amber-500 to-amber-600 text-slate-950',
-      textColor: 'text-yellow-400',
+      borderGrad: 'from-amber-400 via-yellow-500 to-amber-600',
+      subtleBg: 'bg-amber-50/80 border-amber-200/70 text-amber-700',
+      solidBg: 'bg-gradient-to-tr from-amber-400 to-amber-600 text-white',
+      textColor: 'text-amber-600',
       svgUrl: 'url(#icon-grad-gold)',
-      glowShadow: 'shadow-amber-500/35',
-      auraBg: 'bg-yellow-500/20',
+      glowShadow: 'shadow-amber-500/20',
+      auraBg: 'bg-amber-500/15',
     },
     solana: {
-      borderGrad: 'from-emerald-400 via-cyan-400 to-fuchsia-500',
-      subtleBg: 'bg-gradient-to-br from-cyan-500/20 via-fuchsia-500/15 to-slate-900 border-cyan-500/40',
-      solidBg: 'bg-gradient-to-tr from-emerald-400 via-cyan-400 to-fuchsia-500 text-slate-950',
-      textColor: 'text-cyan-300',
+      borderGrad: 'from-emerald-400 via-cyan-400 to-purple-500',
+      subtleBg: 'bg-cyan-50/80 border-cyan-200/70 text-cyan-700',
+      solidBg: 'bg-gradient-to-tr from-emerald-400 via-cyan-400 to-purple-500 text-white',
+      textColor: 'text-cyan-700',
       svgUrl: 'url(#icon-grad-solana)',
-      glowShadow: 'shadow-cyan-500/30',
-      auraBg: 'bg-cyan-500/20',
+      glowShadow: 'shadow-cyan-500/20',
+      auraBg: 'bg-cyan-500/15',
     },
     ethereum: {
-      borderGrad: 'from-purple-400 via-indigo-400 to-sky-400',
-      subtleBg: 'bg-gradient-to-br from-purple-500/20 via-indigo-500/10 to-slate-900 border-purple-500/30',
-      solidBg: 'bg-gradient-to-tr from-purple-400 via-indigo-500 to-sky-400 text-slate-950',
-      textColor: 'text-purple-300',
+      borderGrad: 'from-purple-400 via-indigo-500 to-sky-400',
+      subtleBg: 'bg-indigo-50/80 border-indigo-200/70 text-indigo-700',
+      solidBg: 'bg-gradient-to-tr from-purple-400 via-indigo-500 to-sky-400 text-white',
+      textColor: 'text-indigo-700',
       svgUrl: 'url(#icon-grad-ethereum)',
-      glowShadow: 'shadow-purple-500/30',
-      auraBg: 'bg-purple-500/20',
+      glowShadow: 'shadow-indigo-500/20',
+      auraBg: 'bg-indigo-500/15',
     },
     flame: {
-      borderGrad: 'from-yellow-400 via-orange-500 to-red-600',
-      subtleBg: 'bg-gradient-to-br from-orange-500/25 via-red-500/15 to-slate-900 border-orange-500/40',
-      solidBg: 'bg-gradient-to-tr from-yellow-400 via-orange-500 to-red-600 text-slate-950',
-      textColor: 'text-orange-400',
+      borderGrad: 'from-amber-400 via-orange-500 to-rose-500',
+      subtleBg: 'bg-orange-50/80 border-orange-200/70 text-orange-600',
+      solidBg: 'bg-gradient-to-tr from-amber-400 via-orange-500 to-rose-500 text-white',
+      textColor: 'text-orange-600',
       svgUrl: 'url(#icon-grad-flame)',
-      glowShadow: 'shadow-orange-500/35',
-      auraBg: 'bg-orange-500/25',
+      glowShadow: 'shadow-orange-500/20',
+      auraBg: 'bg-orange-500/15',
     },
   };
 
-  const currentTheme = themeStyles[theme];
+  const currentTheme = themeStyles[theme] || themeStyles.blue;
 
   const sizeStyles = {
     xs: { box: 'w-7 h-7 rounded-lg', icon: 'w-3.5 h-3.5', inner: 'rounded-[6px]' },
@@ -150,7 +150,7 @@ export const GradientIcon: React.FC<GradientIconProps> = ({
     return (
       <div
         className={`${sizeStyles.box} ${currentTheme.solidBg} flex items-center justify-center shrink-0 ${
-          glow ? `shadow-lg ${currentTheme.glowShadow}` : ''
+          glow ? `shadow-md ${currentTheme.glowShadow}` : ''
         } ${className}`}
       >
         <Icon className={`${sizeStyles.icon} ${iconClassName}`} />
@@ -177,9 +177,7 @@ export const GradientIcon: React.FC<GradientIconProps> = ({
   if (variant === 'subtle') {
     return (
       <div
-        className={`${sizeStyles.box} ${currentTheme.subtleBg} border flex items-center justify-center shrink-0 ${
-          glow ? `shadow-sm ${currentTheme.glowShadow}` : ''
-        } ${className}`}
+        className={`${sizeStyles.box} ${currentTheme.subtleBg} border flex items-center justify-center shrink-0 shadow-xs ${className}`}
       >
         <Icon
           className={`${sizeStyles.icon} ${iconClassName}`}
@@ -189,14 +187,14 @@ export const GradientIcon: React.FC<GradientIconProps> = ({
     );
   }
 
-  // Default 'boxed': outer gradient ring with dark high-tech inner center and gradient stroke icon
+  // Dark theme boxed icon: outer gradient hairline with sleek dark charcoal center
   return (
     <div
-      className={`${sizeStyles.box} bg-gradient-to-tr ${currentTheme.borderGrad} p-0.5 shrink-0 transition-transform ${
-        glow ? `shadow-lg ${currentTheme.glowShadow}` : ''
+      className={`${sizeStyles.box} bg-gradient-to-tr ${currentTheme.borderGrad} p-0.5 shrink-0 transition-transform shadow-xs ${
+        glow ? currentTheme.glowShadow : ''
       } ${className}`}
     >
-      <div className={`w-full h-full bg-slate-950/90 ${sizeStyles.inner} flex items-center justify-center backdrop-blur-sm`}>
+      <div className={`w-full h-full bg-[#121925] ${sizeStyles.inner} flex items-center justify-center border border-[#253144]/40`}>
         <Icon
           className={`${sizeStyles.icon} ${iconClassName}`}
           style={{ stroke: currentTheme.svgUrl }}

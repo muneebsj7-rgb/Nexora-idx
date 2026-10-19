@@ -89,6 +89,7 @@ service cloud.firestore {
        *    - WITHDRAWAL requests must strictly have status 'PENDING_REVIEW'.
        *    - TASK_REWARD requests must strictly have status 'PENDING_REVIEW'.
        *    - Client cannot mark any transaction as 'COMPLETED' or 'FAILED'.
+       *    - Clients cannot supply verification/approval metadata or walletCredited flags.
        * 3. Update: Strictly FORBIDDEN from client SDK. Users cannot alter submitted
        *    requests, change amounts, or approve their own transactions.
        * 4. Delete: Strictly FORBIDDEN from client SDK to preserve audit trails.
@@ -106,20 +107,31 @@ service cloud.firestore {
             (request.resource.data.type == 'WITHDRAWAL' && request.resource.data.status == 'PENDING_REVIEW')
             ||
             (request.resource.data.type == 'TASK_REWARD' && request.resource.data.status == 'PENDING_REVIEW')
-          );
+          )
+          && !request.resource.data.keys().hasAny([
+            'approvedBy',
+            'approvedAt',
+            'verifiedBy',
+            'verifiedAt',
+            'walletCredited'
+          ]);
         allow update, delete: if false;
       }
 
       /**
-       * Mining session subcollection: /users/{userId}/mining/session
+       * Mining session subcollection: /users/{userId}/mining/{docId}
        *
        * Security Constraints:
-       * 1. Read: Authenticated owner can read their own mining session.
-       * 2. Write (create/update): Authenticated owner can start, pause, or tune their mining session.
+       * 1. Read: Authenticated owner can read their own simulated mining session.
+       * 2. Write (create/update): Authenticated owner can save simulated session preferences.
        *    - Must specify userId matching auth.uid.
        *    - Status must be a valid status ('IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE').
        *    - Hashrate must be a valid non-negative number.
-       *    - Clients cannot tamper with userId.
+       *    - Simulated flag must remain true if specified.
+       *    - Protection of trusted financial, output, and verification fields on BOTH create and update:
+       *      Clients CANNOT set or alter 'verifiedEarningsUSD', 'verifiedPayoutUSD', 'confirmedRewardCoin',
+       *      'walletCredited', 'acceptedShares', or 'uptime'.
+       *    - Direct client payouts or wallet credits are strictly blocked.
        * 3. Delete: Forbidden to maintain session history.
        */
       match /mining/{docId} {
@@ -128,13 +140,31 @@ service cloud.firestore {
           && request.resource.data.userId == userId
           && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
           && request.resource.data.hashrateTHs is number
-          && request.resource.data.hashrateTHs >= 0;
+          && request.resource.data.hashrateTHs >= 0
+          && (!('isSimulated' in request.resource.data) || request.resource.data.isSimulated == true)
+          && !request.resource.data.keys().hasAny([
+            'verifiedEarningsUSD',
+            'verifiedPayoutUSD',
+            'confirmedRewardCoin',
+            'walletCredited',
+            'acceptedShares',
+            'uptime'
+          ]);
         allow update: if isOwner(userId)
           && request.resource.data.userId == userId
           && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
           && request.resource.data.hashrateTHs is number
           && request.resource.data.hashrateTHs >= 0
-          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['userId']));
+          && (!('isSimulated' in request.resource.data) || request.resource.data.isSimulated == true)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'userId',
+            'verifiedEarningsUSD',
+            'verifiedPayoutUSD',
+            'confirmedRewardCoin',
+            'walletCredited',
+            'acceptedShares',
+            'uptime'
+          ]);
         allow delete: if false;
       }
 
@@ -143,13 +173,16 @@ service cloud.firestore {
        *
        * Security Constraints:
        * 1. Read: Authenticated owner can read their own daily streak & reward history.
-       * 2. Write (create/update): Authenticated owner can submit daily check-in claims.
+       * 2. Write (create/update): Authenticated owner can submit daily check-in claim requests.
        *    - Must specify userId matching auth.uid.
        *    - currentStreak must be an integer between 0 and 7.
        *    - totalClaims must be a non-negative integer.
-       *    - Clients CANNOT award themselves verified spendable funds:
-       *      Keys like 'verifiedEarningsUSD', 'walletCredited', 'approvalStatus' are locked against client modification.
        *    - claimStatus must be 'PENDING_VERIFICATION' or 'SIMULATED'.
+       *      Clients CANNOT mark claims as 'APPROVED', 'VERIFIED', or 'COMPLETED'.
+       *    - Protection of trusted approval and financial fields on BOTH create and update:
+       *      Clients cannot supply or alter 'approvalStatus', 'verifiedAt', 'verifiedBy',
+       *      'verifiedEarningsUSD', or 'walletCredited'.
+       *    - Client-generated dates and streaks are treated strictly as pending requests.
        * 3. Delete: Forbidden from client SDK.
        */
       match /rewards/{rewardDoc} {
@@ -160,19 +193,28 @@ service cloud.firestore {
           && request.resource.data.currentStreak >= 0
           && request.resource.data.currentStreak <= 7
           && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
-          && (!('verifiedEarningsUSD' in request.resource.data) || request.resource.data.verifiedEarningsUSD == 0);
+          && !request.resource.data.keys().hasAny([
+            'approvalStatus',
+            'verifiedAt',
+            'verifiedBy',
+            'verifiedEarningsUSD',
+            'walletCredited'
+          ]);
         allow update: if isOwner(userId)
           && request.resource.data.userId == userId
           && request.resource.data.currentStreak is number
           && request.resource.data.currentStreak >= 0
           && request.resource.data.currentStreak <= 7
-          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
             'userId',
+            'approvalStatus',
+            'verifiedAt',
+            'verifiedBy',
             'verifiedEarningsUSD',
             'walletCredited',
-            'approvalStatus'
-          ]))
-          && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED']);
+            'createdAt'
+          ]);
         allow delete: if false;
       }
     }

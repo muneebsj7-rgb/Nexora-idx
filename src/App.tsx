@@ -40,19 +40,19 @@ const MainLayout: React.FC = () => {
 
   if (isMobileDeviceFrame) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-2 sm:p-6 text-slate-100">
-        {/* Smartphone Chassis Frame */}
-        <div className="w-full max-w-[430px] h-[92vh] max-h-[890px] bg-slate-950 rounded-[48px] border-[10px] border-slate-800 shadow-[0_0_50px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden relative">
+      <div className="min-h-screen bg-[#04060A] flex flex-col items-center justify-center p-2 sm:p-6 text-[#F4F7FC] transition-colors">
+        {/* Futuristic Smartphone Chassis Frame in Premium Dark Theme */}
+        <div className="w-full max-w-[430px] h-[92vh] max-h-[890px] bg-[#080B12] rounded-[48px] border-[6px] border-[#253144] shadow-[0_25px_80px_-15px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden relative">
           {/* Top Notch / Dynamic Island */}
-          <div className="w-full bg-slate-950 flex items-center justify-center pt-2 pb-1 shrink-0 z-40">
-            <div className="w-28 h-4 bg-slate-900 rounded-full flex items-center justify-end px-3">
-              <div className="w-2.5 h-2.5 rounded-full bg-slate-800 border border-slate-700" />
+          <div className="w-full bg-[#0D121C] flex items-center justify-center pt-2.5 pb-1 shrink-0 z-40 border-b border-[#253144]/60">
+            <div className="w-28 h-4 bg-[#121925] rounded-full flex items-center justify-end px-3 border border-[#253144]">
+              <div className="w-2 h-2 rounded-full bg-[#253144]" />
             </div>
           </div>
 
           <Navigation />
 
-          <main className="flex-1 overflow-y-auto overflow-x-hidden">
+          <main className="flex-1 overflow-y-auto overflow-x-hidden bg-[#080B12]">
             {renderActiveScreen()}
           </main>
         </div>
@@ -65,9 +65,9 @@ const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#07090e] text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-[#080B12] text-[#F4F7FC] flex flex-col selection:bg-[#00D6A3]/20 selection:text-[#00D6A3] font-sans antialiased">
       <Navigation />
-      <main className="flex-1 max-w-7xl w-full mx-auto px-2 sm:px-6 pt-4">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 pt-4">
         {renderActiveScreen()}
       </main>
       <ToastContainer />

@@ -59,65 +59,65 @@ export const EarnScreen: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-[#F4F7FC] tracking-tight flex items-center gap-2">
               Earn & Referral Center
-              <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30">
                 Tier Multipliers
               </span>
             </h1>
             {isRealUser ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
+                <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse" />
                 Firestore Synced (UTC)
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                <span className="w-2 h-2 rounded-full bg-[#F3B64B]" />
                 Sandbox Demo
               </span>
             )}
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-[#98A6BA] mt-1">
             Claim daily login streak bonuses, community bounties, and invite mining partners
           </p>
         </div>
 
         {isRealUser && (
           <div className="flex items-center gap-2 text-xs font-mono">
-            <span className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300">
-              Streak: <strong className="text-emerald-400">{dailyStreakRecord?.currentStreak || 0}/7d</strong>
+            <span className="px-3 py-1.5 rounded-xl bg-[#121925] border border-[#253144] text-[#F4F7FC]">
+              Streak: <strong className="text-[#00D6A3]">{dailyStreakRecord?.currentStreak || 0}/7d</strong>
             </span>
-            <span className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300">
-              Total Claims: <strong className="text-cyan-400">{dailyStreakRecord?.totalClaims || 0}</strong>
+            <span className="px-3 py-1.5 rounded-xl bg-[#121925] border border-[#253144] text-[#F4F7FC]">
+              Total Claims: <strong className="text-[#25B9F3]">{dailyStreakRecord?.totalClaims || 0}</strong>
             </span>
           </div>
         )}
       </div>
 
       {/* 1. Daily Check-in Streak Banner */}
-      <div className="rounded-3xl p-6 border border-emerald-500/30 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 shadow-xl relative overflow-hidden">
+      <div className="rounded-3xl p-6 border border-[#00D6A3]/30 bg-gradient-to-br from-[#121925] via-[#102324] to-[#121925] shadow-xl relative overflow-hidden">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
           <div className="flex items-center gap-2.5">
             <GradientIcon icon={Flame} theme="flame" size="md" variant="solid" />
             <div>
-              <h2 className="text-base font-bold text-white">7-Day Miner Check-in Streak</h2>
-              <p className="text-xs text-slate-400">Log in daily to claim consecutive USDT mining credits</p>
+              <h2 className="text-base font-bold text-[#F4F7FC]">7-Day Miner Check-in Streak</h2>
+              <p className="text-xs text-[#98A6BA]">Log in daily to claim consecutive USDT mining credits</p>
             </div>
           </div>
 
-          <div className="text-xs font-mono text-slate-400">
+          <div className="text-xs font-mono text-[#98A6BA]">
             {isRealUser ? (
               hasClaimedToday ? (
-                <span className="px-2.5 py-1 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <span className="px-2.5 py-1 rounded-xl bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
                   Claimed for Today • Next Reset: 00:00 UTC
                 </span>
               ) : (
-                <span className="px-2.5 py-1 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                <span className="px-2.5 py-1 rounded-xl bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
                   Ready to Claim Today (UTC: {todayUTC})
                 </span>
               )
             ) : (
-              <span className="text-slate-500">Demo Check-in Simulation</span>
+              <span className="text-[#98A6BA]">Demo Check-in Simulation</span>
             )}
           </div>
         </div>
@@ -134,23 +134,23 @@ export const EarnScreen: React.FC = () => {
                 disabled={reward.isClaimed || !reward.isToday || claiming}
                 className={`p-3 rounded-2xl border text-center transition-all flex flex-col items-center justify-between min-h-[95px] relative ${
                   reward.isClaimed
-                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 opacity-90'
+                    ? 'border-[#00D6A3]/30 bg-[#00D6A3]/10 text-[#00D6A3] opacity-90'
                     : reward.isToday
-                    ? 'border-emerald-400 bg-emerald-500/20 text-white shadow-lg shadow-emerald-500/20 scale-105 animate-pulse cursor-pointer'
-                    : 'border-slate-800 bg-slate-950/60 text-slate-500 opacity-60 cursor-not-allowed'
+                    ? 'border-[#00D6A3] bg-[#00D6A3]/20 text-[#F4F7FC] shadow-lg shadow-[#00D6A3]/20 scale-105 cursor-pointer'
+                    : 'border-[#253144] bg-[#0D121C]/60 text-[#98A6BA]/60 opacity-60 cursor-not-allowed'
                 }`}
               >
                 <span className="text-[10px] font-bold uppercase tracking-wider">Day {reward.day}</span>
-                <span className="text-sm font-extrabold font-mono text-white mt-1">
+                <span className="text-sm font-extrabold font-mono text-[#F4F7FC] mt-1">
                   +${reward.rewardUSD.toFixed(2)}
                 </span>
                 <span className="text-[9px] font-semibold mt-1">
                   {reward.isClaimed ? (
-                    <span className="flex items-center gap-0.5 text-emerald-400">
+                    <span className="flex items-center gap-0.5 text-[#00D6A3]">
                       <CheckCircle2 className="w-3 h-3" /> Done
                     </span>
                   ) : reward.isToday ? (
-                    <span className="text-emerald-300 font-bold underline">
+                    <span className="text-[#00D6A3] font-bold underline">
                       {claiming ? 'Saving...' : 'Claim'}
                     </span>
                   ) : (
@@ -163,49 +163,49 @@ export const EarnScreen: React.FC = () => {
         </div>
 
         {/* Verification and Security Notice */}
-        <div className="mt-4 pt-3 border-t border-slate-800/80 text-[11px] text-slate-400 flex items-center justify-between flex-wrap gap-2">
+        <div className="mt-4 pt-3 border-t border-[#253144] text-[11px] text-[#98A6BA] flex items-center justify-between flex-wrap gap-2">
           <span>
-            <strong className="text-slate-300">Security Policy:</strong> Claims are persisted to <code className="text-emerald-400 font-mono">users/{'{uid}'}/rewards/dailyStreak</code>. Client balance modification is blocked; claims are queued for server-side verification.
+            <strong className="text-[#F4F7FC]">Security Policy:</strong> Check-in claims are recorded in Firestore as PENDING_VERIFICATION. Direct client balance credits are blocked by Firestore security rules; claims remain pending until trusted verification is implemented.
           </span>
-          <span className="font-mono text-slate-500 text-[10px]">
+          <span className="font-mono text-[#98A6BA] text-[10px]">
             UTC Calendar Integrity Enforced
           </span>
         </div>
       </div>
 
       {/* 2. Referral Affiliate Program Card */}
-      <div className="rounded-3xl p-6 border border-slate-800 bg-slate-900/70 backdrop-blur-md">
+      <div className="rounded-3xl p-6 border border-[#253144] bg-[#121925] shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <GradientIcon icon={Users} theme="cyan" size="md" variant="boxed" />
             <div>
-              <h2 className="text-base font-bold text-white">Cloud Mining Referral Program</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <h2 className="text-base font-bold text-[#F4F7FC]">Cloud Mining Referral Program</h2>
+              <p className="text-xs text-[#98A6BA] mt-0.5">
                 Earn passive USDT commissions whenever your invited friends activate cloud hash contracts.
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-xs font-mono px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-300">
-              Code: <strong className="text-emerald-400">{referralCode}</strong>
+            <span className="text-xs font-mono px-3 py-1.5 rounded-xl bg-[#0D121C] border border-[#253144] text-[#F4F7FC]">
+              Code: <strong className="text-[#00D6A3]">{referralCode}</strong>
             </span>
             <button
               onClick={copyRefCode}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+              className="p-2 rounded-xl bg-[#182232] hover:bg-[#253144] text-[#98A6BA] hover:text-[#F4F7FC] transition-colors border border-[#253144]"
               title="Copy Referral Code"
             >
-              {copiedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+              {copiedCode ? <Check className="w-4 h-4 text-[#00D6A3]" /> : <Copy className="w-4 h-4" />}
             </button>
           </div>
         </div>
 
         {/* Share Link Box */}
-        <div className="mt-4 p-3 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
-          <span className="text-xs font-mono text-slate-300 truncate pl-2">{referralLink}</span>
+        <div className="mt-4 p-3 rounded-2xl bg-[#0D121C] border border-[#253144] flex items-center justify-between gap-2">
+          <span className="text-xs font-mono text-[#F4F7FC] truncate pl-2">{referralLink}</span>
           <button
             onClick={copyRefLink}
-            className="py-1.5 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition-colors shrink-0 flex items-center gap-1.5"
+            className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs transition-colors shrink-0 flex items-center gap-1.5"
           >
             {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
             <span>{copiedLink ? 'Copied' : 'Share Link'}</span>
@@ -214,29 +214,29 @@ export const EarnScreen: React.FC = () => {
 
         {/* Tier Commissions Breakdown */}
         <div className="mt-5 grid grid-cols-3 gap-3 text-center">
-          <div className="p-3 rounded-2xl bg-slate-950/50 border border-slate-800/60">
-            <span className="text-[10px] text-slate-400 uppercase font-semibold block">Tier 1 Direct</span>
-            <span className="text-lg font-extrabold text-emerald-400 font-mono mt-1 block">5.0%</span>
-            <span className="text-[10px] text-slate-500">of contract value</span>
+          <div className="p-3 rounded-2xl bg-[#0D121C] border border-[#253144]">
+            <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Tier 1 Direct</span>
+            <span className="text-lg font-extrabold text-[#00D6A3] font-mono mt-1 block">5.0%</span>
+            <span className="text-[10px] text-[#98A6BA]">of contract value</span>
           </div>
 
-          <div className="p-3 rounded-2xl bg-slate-950/50 border border-slate-800/60">
-            <span className="text-[10px] text-slate-400 uppercase font-semibold block">Tier 2 Sub</span>
-            <span className="text-lg font-extrabold text-cyan-400 font-mono mt-1 block">2.0%</span>
-            <span className="text-[10px] text-slate-500">second-degree miners</span>
+          <div className="p-3 rounded-2xl bg-[#0D121C] border border-[#253144]">
+            <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Tier 2 Sub</span>
+            <span className="text-lg font-extrabold text-[#25B9F3] font-mono mt-1 block">2.0%</span>
+            <span className="text-[10px] text-[#98A6BA]">second-degree miners</span>
           </div>
 
-          <div className="p-3 rounded-2xl bg-slate-950/50 border border-slate-800/60">
-            <span className="text-[10px] text-slate-400 uppercase font-semibold block">Tier 3 Network</span>
-            <span className="text-lg font-extrabold text-amber-400 font-mono mt-1 block">1.0%</span>
-            <span className="text-[10px] text-slate-500">extended network</span>
+          <div className="p-3 rounded-2xl bg-[#0D121C] border border-[#253144]">
+            <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Tier 3 Network</span>
+            <span className="text-lg font-extrabold text-[#F3B64B] font-mono mt-1 block">1.0%</span>
+            <span className="text-[10px] text-[#98A6BA]">extended network</span>
           </div>
         </div>
       </div>
 
       {/* 3. Community & Security Bounty Tasks */}
       <div>
-        <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+        <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider mb-3">
           Mining Tasks & Bounties
         </h2>
         <div className="space-y-3">
@@ -247,7 +247,7 @@ export const EarnScreen: React.FC = () => {
             return (
               <div
                 key={task.id}
-                className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-slate-700 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                className="p-4 rounded-2xl bg-[#121925] border border-[#253144] hover:border-[#36465D] transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div className="flex items-start gap-3">
                   {task.category === 'Security' && <GradientIcon icon={Shield} theme="emerald" size="sm" variant="boxed" className="mt-0.5" />}
@@ -258,18 +258,18 @@ export const EarnScreen: React.FC = () => {
                   )}
                   <div>
                     <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-white text-xs sm:text-sm">{task.title}</h3>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-800 text-slate-300">
+                      <h3 className="font-bold text-[#F4F7FC] text-xs sm:text-sm">{task.title}</h3>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#0D121C] border border-[#253144] text-[#98A6BA]">
                         {task.category}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-400 mt-1">{task.description}</p>
+                    <p className="text-xs text-[#98A6BA] mt-1">{task.description}</p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3 self-end sm:self-center">
                   <div className="text-right">
-                    <span className="text-xs font-mono font-bold text-emerald-400 block">
+                    <span className="text-xs font-mono font-bold text-[#00D6A3] block">
                       +${task.rewardUSD.toFixed(2)} {task.rewardAsset}
                     </span>
                   </div>
@@ -287,10 +287,10 @@ export const EarnScreen: React.FC = () => {
                     disabled={isClaimed}
                     className={`py-1.5 px-3.5 rounded-xl text-xs font-bold transition-all ${
                       isClaimed
-                        ? 'bg-slate-800 text-slate-500'
+                        ? 'bg-[#182232] text-[#98A6BA]/60 border border-[#253144]'
                         : isCompleted
-                        ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md shadow-emerald-500/20'
-                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                        ? 'bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] shadow-md shadow-[#00D6A3]/20'
+                        : 'bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] border border-[#253144]'
                     }`}
                   >
                     {isClaimed ? 'Claimed' : isCompleted ? 'Claim Reward' : 'Start Task'}
