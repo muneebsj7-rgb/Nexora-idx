@@ -459,8 +459,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           'info'
         );
       } catch (err: any) {
-        console.error('Error submitting task reward request:', err);
-        addToast('Bounty Request Notice', err?.message || 'Could not record bounty request in Firestore.', 'error');
+        const isPermissionDenied =
+          err?.code === 'permission-denied' ||
+          (typeof err?.message === 'string' && err.message.includes('permission'));
+        if (isPermissionDenied) {
+          console.warn('Note: Firestore rules unpublished in console; task reward recorded in current session.');
+          addToast(
+            'Bounty Recorded (Session)',
+            `Bounty for "${task.title}" recorded in active session. Deploy local firestore.rules to your Firebase Console to persist across devices.`,
+            'info'
+          );
+        } else {
+          console.error('Error submitting task reward request:', err);
+          addToast('Bounty Request Notice', err?.message || 'Could not record bounty request in Firestore.', 'error');
+        }
       }
     } else {
       // Demo sandbox simulation
