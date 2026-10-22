@@ -146,37 +146,40 @@ export class MiningFirestoreService {
         sessionDocRef,
         async (docSnap) => {
           if (!docSnap.exists()) {
-            // Document does not exist yet for this user: initialize default session in Firestore
             try {
-              const defaultSessionData: Omit<MiningSession, 'updatedAt'> = {
+              // Document does not exist yet: write ONLY harmless simulation preference fields to Firestore
+              const simulationPreferences = {
                 userId: uid,
                 id: `sess_${Date.now()}`,
-                algorithm: 'SHA-256 (BTC)',
-                targetCoin: 'BTC',
+                algorithm: 'SHA-256 (BTC)' as const,
+                targetCoin: 'BTC' as const,
                 hashrateTHs: 0.0,
                 efficiencyWTH: 16.2,
                 temperatureC: 45.0,
-                uptimeSeconds: 0,
-                status: 'IDLE',
+                status: 'IDLE' as const,
                 startedAt: null,
-                todayEstimatedRewardCoin: 0.0,
-                todayEstimatedRewardUSD: 0.0,
-                confirmedRewardCoin: 0.0,
                 poolName: 'Nexora Global Stratum - FRA01',
-                acceptedShares: 0,
-                rejectedShares: 0,
-                hardwareProfile: 'Balanced',
+                hardwareProfile: 'Balanced' as const,
                 planId: 'plan_starter_sha256',
                 lastSessionId: `sess_${Date.now()}`,
                 isSimulated: true,
               };
+
               await setDoc(sessionDocRef, {
-                ...defaultSessionData,
+                ...simulationPreferences,
                 createdAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
               });
+
+              // Supply default in-memory telemetry to the UI (clearly simulated)
               onUpdate({
-                ...defaultSessionData,
+                ...simulationPreferences,
+                uptimeSeconds: 0,
+                todayEstimatedRewardCoin: 0.0,
+                todayEstimatedRewardUSD: 0.0,
+                confirmedRewardCoin: 0.0,
+                acceptedShares: 0,
+                rejectedShares: 0,
                 updatedAt: new Date().toISOString(),
               });
             } catch (initErr) {

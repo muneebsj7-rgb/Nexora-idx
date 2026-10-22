@@ -2,6 +2,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  writeBatch,
   onSnapshot,
   serverTimestamp,
   FirestoreError,
@@ -312,8 +313,10 @@ export class DailyRewardsFirestoreService {
     const txDocRef = doc(db, 'users', uid, 'transactions', txId);
 
     try {
-      // 1. Update dailyStreak document
-      await setDoc(streakDocRef, {
+      const batch = writeBatch(db);
+
+      // 1. Prepare dailyStreak document payload (only permitted harmless request fields)
+      const streakPayload: Record<string, any> = {
         userId: uid,
         currentStreak: updatedStreakRecord.currentStreak,
         lastClaimDate: updatedStreakRecord.lastClaimDate,
@@ -322,10 +325,17 @@ export class DailyRewardsFirestoreService {
         claimStatus: 'PENDING_VERIFICATION',
         claimHistory: updatedStreakRecord.claimHistory,
         updatedAt: serverTimestamp(),
-      });
+      };
 
-      // 2. Queue pending reward transaction
-      await setDoc(txDocRef, {
+      // Only set createdAt if initial creation (first streak claim)
+      if (!currentStreakRecord) {
+        streakPayload.createdAt = serverTimestamp();
+      }
+
+      batch.set(streakDocRef, streakPayload, { merge: true });
+
+      // 2. Queue pending reward transaction request (strict allowlist, status PENDING_REVIEW)
+      batch.set(txDocRef, {
         id: txId,
         userId: uid,
         type: 'TASK_REWARD',
@@ -338,6 +348,9 @@ export class DailyRewardsFirestoreService {
         note: `Daily Check-in Day ${nextStreak} Bonus (Pending Verification)`,
         createdAt: serverTimestamp(),
       });
+
+      // Atomic commit: eliminates partial writes between streak and transaction records
+      await batch.commit();
 
       return {
         streakRecord: updatedStreakRecord,
