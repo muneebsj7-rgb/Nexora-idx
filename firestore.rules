@@ -303,16 +303,10 @@ service cloud.firestore {
         allow create: if isOwner(userId)
           && isValidId(rewardDoc)
           && request.resource.data.userId == userId
-          && (
-            request.resource.data.currentStreak is int
-            || (request.resource.data.currentStreak is number && int(request.resource.data.currentStreak) == request.resource.data.currentStreak)
-          )
+          && request.resource.data.currentStreak is int
           && request.resource.data.currentStreak >= 0
           && request.resource.data.currentStreak <= 7
-          && (
-            request.resource.data.totalClaims is int
-            || (request.resource.data.totalClaims is number && int(request.resource.data.totalClaims) == request.resource.data.totalClaims)
-          )
+          && request.resource.data.totalClaims is int
           && request.resource.data.totalClaims >= 0
           && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
           && request.resource.data.keys().hasOnly([
@@ -339,16 +333,10 @@ service cloud.firestore {
         allow update: if isOwner(userId)
           && isValidId(rewardDoc)
           && (!('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId)
-          && (
-            request.resource.data.currentStreak is int
-            || (request.resource.data.currentStreak is number && int(request.resource.data.currentStreak) == request.resource.data.currentStreak)
-          )
+          && request.resource.data.currentStreak is int
           && request.resource.data.currentStreak >= 0
           && request.resource.data.currentStreak <= 7
-          && (
-            request.resource.data.totalClaims is int
-            || (request.resource.data.totalClaims is number && int(request.resource.data.totalClaims) == request.resource.data.totalClaims)
-          )
+          && request.resource.data.totalClaims is int
           && request.resource.data.totalClaims >= 0
           && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
