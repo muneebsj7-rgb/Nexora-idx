@@ -13,6 +13,7 @@ export interface UserProfile {
   accentTheme?: 'emerald' | 'violet' | 'blue' | 'cyan';
   isDemo?: boolean;
   authProvider?: 'firebase' | 'demo';
+  isAdmin?: boolean;
 }
 
 export interface CryptoMarket {
@@ -88,7 +89,7 @@ export interface WalletAsset {
 }
 
 export type TransactionType = 'DEPOSIT' | 'WITHDRAWAL' | 'MINING_PAYOUT' | 'REFERRAL_BONUS' | 'TASK_REWARD';
-export type TransactionStatus = 'COMPLETED' | 'PENDING_CONFIRMATION' | 'PENDING_REVIEW' | 'PROCESSING' | 'FAILED';
+export type TransactionStatus = 'COMPLETED' | 'PENDING_CONFIRMATION' | 'PENDING_REVIEW' | 'PROCESSING' | 'FAILED' | 'REJECTED';
 
 export interface Transaction {
   id: string;
@@ -106,6 +107,16 @@ export interface Transaction {
   note?: string;
   userId?: string;
   isDemo?: boolean;
+  approvedBy?: string;
+  approvedAt?: string;
+  approvalNote?: string;
+  creditedAmount?: number;
+  creditedAsset?: string;
+  walletCredited?: boolean;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  updatedAt?: string;
 }
 
 export interface EarnTask {

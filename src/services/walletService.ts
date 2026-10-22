@@ -292,6 +292,16 @@ export class WalletFirestoreService {
               fromAddress: data.fromAddress,
               note: data.note,
               isDemo: false,
+              approvedBy: data.approvedBy,
+              approvedAt: data.approvedAt ? String(data.approvedAt) : undefined,
+              approvalNote: data.approvalNote,
+              creditedAmount: typeof data.creditedAmount === 'number' ? data.creditedAmount : undefined,
+              creditedAsset: data.creditedAsset,
+              walletCredited: Boolean(data.walletCredited),
+              rejectedBy: data.rejectedBy,
+              rejectedAt: data.rejectedAt ? String(data.rejectedAt) : undefined,
+              rejectionReason: data.rejectionReason,
+              updatedAt: data.updatedAt ? String(data.updatedAt) : undefined,
             });
           });
 
