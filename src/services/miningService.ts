@@ -307,7 +307,6 @@ export class MiningFirestoreService {
     }
 
     const updates = {
-      userId: uid,
       status: newStatus,
       hashrateTHs: targetHashrate,
       startedAt: !isCurrentlyActive ? nowIso : currentSession.startedAt,
@@ -361,7 +360,6 @@ export class MiningFirestoreService {
       await setDoc(
         sessionDocRef,
         {
-          userId: uid,
           hardwareProfile: profile,
           hashrateTHs: newHashrate,
           efficiencyWTH: power,

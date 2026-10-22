@@ -317,7 +317,6 @@ export class DailyRewardsFirestoreService {
 
       // 1. Prepare dailyStreak document payload (only permitted harmless request fields)
       const streakPayload: Record<string, any> = {
-        userId: uid,
         currentStreak: updatedStreakRecord.currentStreak,
         lastClaimDate: updatedStreakRecord.lastClaimDate,
         lastClaimTimestamp: updatedStreakRecord.lastClaimTimestamp,
@@ -327,8 +326,9 @@ export class DailyRewardsFirestoreService {
         updatedAt: serverTimestamp(),
       };
 
-      // Only set createdAt if initial creation (first streak claim)
+      // Only set userId and createdAt on initial creation (first streak claim)
       if (!currentStreakRecord) {
+        streakPayload.userId = uid;
         streakPayload.createdAt = serverTimestamp();
       }
 

@@ -65,18 +65,16 @@ service cloud.firestore {
 
       allow update: if isOwner(userId)
         && isValidId(userId)
-        && (!('id' in request.resource.data) || request.resource.data.id == userId)
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'id',
-          'kycTier',
-          'isAdmin',
-          'createdAt'
-        ])
+        && (!('id' in request.resource.data) || request.resource.data.id == resource.data.id)
+        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == resource.data.createdAt)
+        && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == resource.data.kycTier)
+        && (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == resource.data.isAdmin)
         && (
           !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isEmailVerified'])
           || request.resource.data.isEmailVerified == request.auth.token.email_verified
         )
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id',
           'displayName',
           'avatarUrl',
           'referralCode',
@@ -238,13 +236,14 @@ service cloud.firestore {
 
         allow update: if isOwner(userId)
           && isValidId(docId)
-          && request.resource.data.userId == userId
+          && (!('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId)
           && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
           && request.resource.data.hashrateTHs is number
           && request.resource.data.hashrateTHs >= 0
           && (!('isSimulated' in request.resource.data) || request.resource.data.isSimulated == true)
           && (!('hardwareProfile' in request.resource.data) || request.resource.data.hardwareProfile in ['Eco', 'Balanced', 'Turbo Overclock'])
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'userId',
             'status',
             'hashrateTHs',
             'startedAt',
@@ -260,7 +259,6 @@ service cloud.firestore {
             'updatedAt'
           ])
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'userId',
             'id',
             'createdAt',
             'verifiedEarningsUSD',
@@ -305,10 +303,16 @@ service cloud.firestore {
         allow create: if isOwner(userId)
           && isValidId(rewardDoc)
           && request.resource.data.userId == userId
-          && request.resource.data.currentStreak is number
+          && (
+            request.resource.data.currentStreak is int
+            || (request.resource.data.currentStreak is number && int(request.resource.data.currentStreak) == request.resource.data.currentStreak)
+          )
           && request.resource.data.currentStreak >= 0
           && request.resource.data.currentStreak <= 7
-          && request.resource.data.totalClaims is number
+          && (
+            request.resource.data.totalClaims is int
+            || (request.resource.data.totalClaims is number && int(request.resource.data.totalClaims) == request.resource.data.totalClaims)
+          )
           && request.resource.data.totalClaims >= 0
           && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
           && request.resource.data.keys().hasOnly([
@@ -334,14 +338,21 @@ service cloud.firestore {
 
         allow update: if isOwner(userId)
           && isValidId(rewardDoc)
-          && request.resource.data.userId == userId
-          && request.resource.data.currentStreak is number
+          && (!('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId)
+          && (
+            request.resource.data.currentStreak is int
+            || (request.resource.data.currentStreak is number && int(request.resource.data.currentStreak) == request.resource.data.currentStreak)
+          )
           && request.resource.data.currentStreak >= 0
           && request.resource.data.currentStreak <= 7
-          && request.resource.data.totalClaims is number
+          && (
+            request.resource.data.totalClaims is int
+            || (request.resource.data.totalClaims is number && int(request.resource.data.totalClaims) == request.resource.data.totalClaims)
+          )
           && request.resource.data.totalClaims >= 0
           && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'userId',
             'currentStreak',
             'lastClaimDate',
             'lastClaimTimestamp',
@@ -351,7 +362,6 @@ service cloud.firestore {
             'updatedAt'
           ])
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'userId',
             'createdAt',
             'approvalStatus',
             'verifiedAt',

@@ -515,7 +515,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         );
         return {
           success: true,
-          message: 'Deposit request saved in Firestore. Status: Pending Node Confirmation (0/12).',
+          message: 'Deposit request saved in Firestore. Status: PENDING_CONFIRMATION (Awaiting backend verification).',
         };
       } catch (err: any) {
         const errorMsg = err?.message || 'Failed to submit deposit request to Cloud Firestore.';

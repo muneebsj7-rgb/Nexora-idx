@@ -153,7 +153,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
                 <strong className="text-[#00D6A3]">
                   {currentAsset.minDeposit} {selectedSymbol}
                 </strong>
-                . Funds are credited after blockchain nodes reach 12 confirmations.
+                . Deposit requests are saved in Firestore as pending confirmation until processed by a trusted backend.
               </p>
             </div>
           </div>
@@ -161,7 +161,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
           {/* Submit Deposit Proof Form */}
           <form onSubmit={handleSubmit} className="space-y-3 pt-2 border-t border-[#253144]">
             <h4 className="text-xs font-semibold text-[#F4F7FC] uppercase tracking-wider">
-              Notify Automated Node of Deposit
+              Submit Deposit Request Reference
             </h4>
 
             <div>

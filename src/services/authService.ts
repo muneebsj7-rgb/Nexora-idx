@@ -519,7 +519,6 @@ export class AuthService {
         await setDoc(
           userDocRef,
           {
-            id: auth.currentUser.uid,
             ...safeClientUpdates,
             updatedAt: serverTimestamp(),
           },

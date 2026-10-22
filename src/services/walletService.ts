@@ -351,7 +351,7 @@ export class WalletFirestoreService {
       timestamp: new Date().toISOString(),
       network: params.network,
       txHash: params.txHash.trim(),
-      note: 'Pending Blockchain Node Confirmations (0/12)',
+      note: 'Deposit Request Submitted (Pending Verification)',
       isDemo: false,
     };
 
@@ -419,7 +419,7 @@ export class WalletFirestoreService {
       timestamp: new Date().toISOString(),
       network: params.network,
       toAddress: params.address.trim(),
-      note: 'Awaiting Automated Compliance & Signer Node Review',
+      note: 'Withdrawal Request Submitted (Pending Review)',
       isDemo: false,
     };
 
