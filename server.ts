@@ -1,7 +1,11 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, cert, applicationDefault } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -9,7 +13,11 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT) || 3000;
+// In development, the dev server must run strictly on port 3000.
+// In production (Cloud Run), bind to process.env.PORT if specified.
+const PORT = process.env.NODE_ENV === 'production' && process.env.PORT
+  ? Number(process.env.PORT)
+  : 3000;
 const ADMIN_EMAILS = [
   'muneebsj7@gmail.com',
   ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((e) => e.trim().toLowerCase()) : []),
@@ -20,7 +28,7 @@ let isFirebaseAdminInitialized = false;
 let adminInitError: string | null = null;
 
 function setupFirebaseAdmin() {
-  if (admin.apps.length > 0) {
+  if (getApps().length > 0) {
     isFirebaseAdminInitialized = true;
     return;
   }
@@ -35,8 +43,8 @@ function setupFirebaseAdmin() {
       if (typeof parsed === 'string') {
         parsed = JSON.parse(parsed);
       }
-      admin.initializeApp({
-        credential: admin.credential.cert(parsed),
+      initializeApp({
+        credential: cert(parsed),
         projectId: parsed.project_id || projectId,
       });
       isFirebaseAdminInitialized = true;
@@ -45,8 +53,8 @@ function setupFirebaseAdmin() {
     }
 
     if (credentialsPath) {
-      admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
+      initializeApp({
+        credential: applicationDefault(),
         projectId,
       });
       isFirebaseAdminInitialized = true;
@@ -56,7 +64,7 @@ function setupFirebaseAdmin() {
 
     // Try default credential initialization (e.g. inside GCP environment)
     if (projectId && !projectId.includes('default') && !projectId.includes('your-project-id')) {
-      admin.initializeApp({
+      initializeApp({
         projectId,
       });
       isFirebaseAdminInitialized = true;
@@ -65,7 +73,7 @@ function setupFirebaseAdmin() {
     }
   } catch (err: any) {
     adminInitError = err?.message || String(err);
-    console.warn('Firebase Admin SDK deferred initialization notice:', adminInitError);
+    console.warn('Firebase Admin SDK initialization notice:', adminInitError);
   }
 }
 
@@ -98,16 +106,19 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
 
   try {
     // 1. Try Firebase Admin token verification if Admin Auth is available
-    if (admin.apps.length > 0) {
+    if (getApps().length > 0) {
       try {
-        const decoded = await admin.auth().verifyIdToken(token);
+        const decoded = await getAuth().verifyIdToken(token);
         const email = (decoded.email || '').toLowerCase();
-        const hasAdminRole = decoded.admin === true || ADMIN_EMAILS.includes(email);
+        const isEmailVerified = decoded.email_verified === true;
+        const hasAdminRole = decoded.admin === true || (ADMIN_EMAILS.includes(email) && isEmailVerified);
 
         if (!hasAdminRole) {
           res.status(403).json({
             success: false,
-            error: `User ${email || decoded.uid} does not have administrative privileges.`,
+            error: !isEmailVerified
+              ? `User email ${email} must be verified before administrative access is granted.`
+              : `User ${email || decoded.uid} does not have administrative privileges.`,
           });
           return;
         }
@@ -141,12 +152,15 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
         const userObj = data.users?.[0];
         if (userObj) {
           const email = (userObj.email || '').toLowerCase();
-          const hasAdminRole = ADMIN_EMAILS.includes(email);
+          const isEmailVerified = userObj.emailVerified === true;
+          const hasAdminRole = ADMIN_EMAILS.includes(email) && isEmailVerified;
 
           if (!hasAdminRole) {
             res.status(403).json({
               success: false,
-              error: `User ${email || userObj.localId} is not in the authorized administrator allowlist.`,
+              error: !isEmailVerified
+                ? `User email ${email} must be verified before administrative access is granted.`
+                : `User ${email || userObj.localId} is not in the authorized administrator allowlist.`,
             });
             return;
           }
@@ -162,8 +176,8 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
       }
     }
 
-    // Demo/Sandbox fallback: if testing in sandbox environment
-    if (token === 'demo-admin-token' || token.startsWith('demo_')) {
+    // Demo/Sandbox fallback: strictly limited to local development and exact demo token
+    if (process.env.NODE_ENV !== 'production' && token === 'demo-admin-token') {
       (req as any).adminCaller = {
         uid: 'demo_admin',
         email: 'muneebsj7@gmail.com',
@@ -217,9 +231,9 @@ app.get('/api/admin/setup-status', (_req, res) => {
  * GET /api/admin/pending-deposits
  * Lists pending deposits for administrative review
  */
-app.get('/api/admin/pending-deposits', requireAdminAuth, async (req, res) => {
+app.get('/api/admin/pending-deposits', requireAdminAuth, async (_req, res) => {
   try {
-    if (!admin.apps.length) {
+    if (!getApps().length) {
       res.json({
         deposits: [],
         notice: 'Firebase Admin not connected to Firestore database.',
@@ -227,7 +241,7 @@ app.get('/api/admin/pending-deposits', requireAdminAuth, async (req, res) => {
       return;
     }
 
-    const db = admin.firestore();
+    const db = getFirestore();
     // Query pending deposit transactions across all users via collectionGroup
     const txGroupSnap = await db
       .collectionGroup('transactions')
@@ -285,7 +299,7 @@ app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
   }
 
   // Check if Firebase Admin is connected
-  if (!admin.apps.length) {
+  if (!getApps().length) {
     res.status(503).json({
       success: false,
       error:
@@ -296,7 +310,7 @@ app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
     return;
   }
 
-  const db = admin.firestore();
+  const db = getFirestore();
   const txRef = db.doc(`users/${userId}/transactions/${txId}`);
 
   try {
@@ -353,7 +367,7 @@ app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
           symbol: assetSymbol,
           balance: newBalance,
           lockedBalance: existingLocked,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -365,9 +379,9 @@ app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
         creditedAmount: depositAmount,
         creditedAsset: assetSymbol,
         approvedBy: caller.email,
-        approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+        approvedAt: FieldValue.serverTimestamp(),
         approvalNote: note || 'Admin verified deposit payment',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
 
       return {
@@ -412,7 +426,7 @@ app.post('/api/admin/reject-deposit', requireAdminAuth, async (req, res) => {
     return;
   }
 
-  if (!admin.apps.length) {
+  if (!getApps().length) {
     res.status(503).json({
       success: false,
       error: 'Firebase Admin SDK is not initialized.',
@@ -421,7 +435,7 @@ app.post('/api/admin/reject-deposit', requireAdminAuth, async (req, res) => {
     return;
   }
 
-  const db = admin.firestore();
+  const db = getFirestore();
   const txRef = db.doc(`users/${userId}/transactions/${txId}`);
 
   try {
@@ -439,9 +453,9 @@ app.post('/api/admin/reject-deposit', requireAdminAuth, async (req, res) => {
       transaction.update(txRef, {
         status: 'REJECTED',
         rejectedBy: caller.email,
-        rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+        rejectedAt: FieldValue.serverTimestamp(),
         rejectionReason: reason || 'Blockchain verification unconfirmed or invalid.',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     });
 
@@ -463,22 +477,45 @@ app.post('/api/admin/reject-deposit', requireAdminAuth, async (req, res) => {
 // -------------------------------------------------------------
 
 async function initializeServer() {
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+  const distPath = path.resolve(__dirname, 'dist');
+  const indexHtmlPath = path.resolve(distPath, 'index.html');
+  const hasDist = fs.existsSync(indexHtmlPath);
+
+  if (process.env.NODE_ENV === 'production' && hasDist) {
+    app.use(express.static(distPath));
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(indexHtmlPath);
     });
   } else {
     const { createServer } = await import('vite');
     const vite = await createServer({
-      server: { middlewareMode: true, host: '0.0.0.0' },
+      server: {
+        middlewareMode: true,
+        host: '0.0.0.0',
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
+
+    app.use('*', async (req, res, next) => {
+      const url = req.originalUrl;
+      try {
+        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+      } catch (e: any) {
+        next(e);
+      }
+    });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Nexora Mine full-stack server active on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Nexora Mine server active on http://0.0.0.0:${PORT} (mode: ${process.env.NODE_ENV || 'development'})`);
+  });
+
+  server.on('error', (err: any) => {
+    console.error('Express server listen error:', err);
   });
 }
 

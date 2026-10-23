@@ -272,11 +272,22 @@ export const WalletScreen: React.FC = () => {
                   <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
                     No pending deposits awaiting verification. All deposits are either completed or unsubmitted.
                   </div>
-                ) : (
-                  Array.from(new Map([
-                    ...transactions.filter(t => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION').map(t => [t.id, { ...t, userId: t.userId || user?.id || '' }]),
-                    ...adminPendingDeposits.map(d => [d.id, d]),
-                  ]).values()).map((deposit) => (
+                ) : (() => {
+                  const map = new Map<string, PendingDepositItem>();
+                  transactions
+                    .filter((t) => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION')
+                    .forEach((t) => {
+                      map.set(t.id, {
+                        ...t,
+                        userId: t.userId || user?.id || '',
+                      });
+                    });
+                  adminPendingDeposits.forEach((d) => {
+                    map.set(d.id, d);
+                  });
+                  const pendingList: PendingDepositItem[] = Array.from(map.values());
+
+                  return pendingList.map((deposit) => (
                     <div
                       key={deposit.id}
                       className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
@@ -339,8 +350,8 @@ export const WalletScreen: React.FC = () => {
                         </button>
                       </div>
                     </div>
-                  ))
-                )}
+                  ));
+                })()}
               </div>
             </div>
           )}
@@ -517,6 +528,16 @@ export const WalletScreen: React.FC = () => {
             >
               Withdrawals
             </button>
+            <button
+              onClick={() => setTxFilter('REJECTED')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
+                txFilter === 'REJECTED'
+                  ? 'bg-[#FF4D4D] text-white font-bold'
+                  : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
+              }`}
+            >
+              Rejected
+            </button>
           </div>
         </div>
 
@@ -526,6 +547,7 @@ export const WalletScreen: React.FC = () => {
             {filteredTransactions.map((tx) => {
               const isPositive = ['DEPOSIT', 'MINING_PAYOUT', 'REFERRAL_BONUS', 'TASK_REWARD'].includes(tx.type);
               const isPending = tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW';
+              const isRejected = tx.status === 'REJECTED' || tx.status === 'FAILED';
               return (
                 <div
                   key={tx.id}
@@ -563,7 +585,7 @@ export const WalletScreen: React.FC = () => {
                   </div>
 
                   <div className="text-right shrink-0">
-                    <div className={`font-mono font-bold text-xs ${isPositive ? 'text-[#19C784]' : 'text-[#F4F7FC]'}`}>
+                    <div className={`font-mono font-bold text-xs ${isRejected ? 'text-[#98A6BA] line-through' : isPositive ? 'text-[#19C784]' : 'text-[#F4F7FC]'}`}>
                       {isPositive ? '+' : '-'}{tx.amount} {tx.asset}
                     </div>
                     <div className="mt-0.5">
@@ -574,12 +596,18 @@ export const WalletScreen: React.FC = () => {
                           ? 'bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30'
                           : tx.status === 'PENDING_REVIEW'
                           ? 'bg-[#25B9F3]/15 text-[#25B9F3] border border-[#25B9F3]/30'
+                          : isRejected
+                          ? 'bg-[#FF4D4D]/15 text-[#FF4D4D] border border-[#FF4D4D]/30'
                           : 'bg-[#182232] text-[#98A6BA] border border-[#253144]'
                       }`}>
                         {tx.status === 'PENDING_CONFIRMATION'
                           ? 'Awaiting Confirmation'
                           : tx.status === 'PENDING_REVIEW'
                           ? 'Compliance Review'
+                          : tx.status === 'COMPLETED'
+                          ? 'Approved & Credited'
+                          : isRejected
+                          ? 'Rejected'
                           : tx.status.replace('_', ' ')}
                       </span>
                     </div>
@@ -662,8 +690,55 @@ export const WalletScreen: React.FC = () => {
 
                 <div className="flex justify-between py-1 border-b border-[#253144]">
                   <span className="text-[#98A6BA]">Status:</span>
-                  <span className="font-mono text-[#00D6A3] font-bold">{selectedTx.status}</span>
+                  <span className={`font-mono font-bold ${
+                    selectedTx.status === 'COMPLETED'
+                      ? 'text-[#00D6A3]'
+                      : selectedTx.status === 'REJECTED' || selectedTx.status === 'FAILED'
+                      ? 'text-[#FF4D4D]'
+                      : 'text-[#F3B64B]'
+                  }`}>
+                    {selectedTx.status}
+                  </span>
                 </div>
+
+                {selectedTx.approvedBy && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Approved By:</span>
+                    <span className="font-mono text-[#00D6A3] truncate max-w-[200px]">{selectedTx.approvedBy}</span>
+                  </div>
+                )}
+
+                {selectedTx.approvedAt && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Approved At:</span>
+                    <span className="font-mono text-[#98A6BA]">
+                      {new Date(selectedTx.approvedAt).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+
+                {selectedTx.walletCredited && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Wallet Balance Credited:</span>
+                    <span className="font-mono text-[#00D6A3] font-bold">
+                      +{selectedTx.creditedAmount || selectedTx.amount} {selectedTx.creditedAsset || selectedTx.asset}
+                    </span>
+                  </div>
+                )}
+
+                {selectedTx.rejectionReason && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#FF4D4D]">Rejection Reason:</span>
+                    <span className="font-mono text-[#FF4D4D] truncate max-w-[200px]">{selectedTx.rejectionReason}</span>
+                  </div>
+                )}
+
+                {selectedTx.rejectedBy && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Rejected By:</span>
+                    <span className="font-mono text-[#98A6BA] truncate max-w-[200px]">{selectedTx.rejectedBy}</span>
+                  </div>
+                )}
 
                 <div className="flex justify-between py-1 border-b border-[#253144]">
                   <span className="text-[#98A6BA]">Network:</span>

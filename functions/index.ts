@@ -17,17 +17,18 @@
  */
 
 import * as functions from 'firebase-functions';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
-if (admin.apps.length === 0) {
-  admin.initializeApp();
+if (getApps().length === 0) {
+  initializeApp();
 }
 
-const db = admin.firestore();
+const db = getFirestore();
 
 const ADMIN_EMAILS = [
   'muneebsj7@gmail.com',
-  ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map(s => s.trim().toLowerCase()) : [])
+  ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((s: string) => s.trim().toLowerCase()) : [])
 ];
 
 function isAuthorizedAdminEmail(email?: string): boolean {
@@ -41,7 +42,7 @@ function isAuthorizedAdminEmail(email?: string): boolean {
  */
 export const onDepositStatusChanged = functions.firestore
   .document('users/{userId}/transactions/{txId}')
-  .onUpdate(async (change, context) => {
+  .onUpdate(async (change: functions.Change<functions.firestore.DocumentSnapshot>, context: functions.EventContext) => {
     const beforeData = change.before.data();
     const afterData = change.after.data();
     const { userId, txId } = context.params;
@@ -86,7 +87,7 @@ export const onDepositStatusChanged = functions.firestore
               symbol: assetSymbol,
               balance: newBalance,
               lockedBalance: currentLocked,
-              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
           );
@@ -96,8 +97,8 @@ export const onDepositStatusChanged = functions.firestore
             walletCredited: true,
             creditedAmount: amount,
             creditedAsset: assetSymbol,
-            creditedAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            creditedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           });
         });
 
@@ -114,18 +115,19 @@ export const onDepositStatusChanged = functions.firestore
 /**
  * 2. CALLABLE HTTPS FUNCTION: Approve verified deposit
  */
-export const approveDeposit = functions.https.onCall(async (data, context) => {
+export const approveDeposit = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
   // Authentication & Authorization check
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
   const callerEmail = context.auth.token.email;
+  const isEmailVerified = Boolean(context.auth.token.email_verified);
   const isCustomAdmin = Boolean(context.auth.token.admin);
-  if (!isCustomAdmin && !isAuthorizedAdminEmail(callerEmail)) {
+  if (!isCustomAdmin && (!isAuthorizedAdminEmail(callerEmail) || !isEmailVerified)) {
     throw new functions.https.HttpsError(
       'permission-denied',
-      `Caller ${callerEmail} is not authorized to approve deposits.`
+      `Caller ${callerEmail} is not authorized or email is not verified.`
     );
   }
 
@@ -184,7 +186,7 @@ export const approveDeposit = functions.https.onCall(async (data, context) => {
         symbol: assetSymbol,
         balance: newBalance,
         lockedBalance: currentLocked,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -196,9 +198,9 @@ export const approveDeposit = functions.https.onCall(async (data, context) => {
       creditedAmount: amount,
       creditedAsset: assetSymbol,
       approvedBy: callerEmail || context.auth?.uid,
-      approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      approvedAt: FieldValue.serverTimestamp(),
       approvalNote: note || 'Verified blockchain deposit',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     return {
@@ -215,17 +217,18 @@ export const approveDeposit = functions.https.onCall(async (data, context) => {
 /**
  * 3. CALLABLE HTTPS FUNCTION: Reject invalid deposit
  */
-export const rejectDeposit = functions.https.onCall(async (data, context) => {
+export const rejectDeposit = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
   const callerEmail = context.auth.token.email;
+  const isEmailVerified = Boolean(context.auth.token.email_verified);
   const isCustomAdmin = Boolean(context.auth.token.admin);
-  if (!isCustomAdmin && !isAuthorizedAdminEmail(callerEmail)) {
+  if (!isCustomAdmin && (!isAuthorizedAdminEmail(callerEmail) || !isEmailVerified)) {
     throw new functions.https.HttpsError(
       'permission-denied',
-      `Caller ${callerEmail} is not authorized to reject deposits.`
+      `Caller ${callerEmail} is not authorized or email is not verified.`
     );
   }
 
@@ -253,9 +256,9 @@ export const rejectDeposit = functions.https.onCall(async (data, context) => {
     transaction.update(txRef, {
       status: 'REJECTED',
       rejectedBy: callerEmail || context.auth?.uid,
-      rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      rejectedAt: FieldValue.serverTimestamp(),
       rejectionReason: reason || 'Blockchain verification failed',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     return {
