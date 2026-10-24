@@ -195,7 +195,9 @@ export class DailyRewardsFirestoreService {
             totalClaims: typeof data.totalClaims === 'number' ? data.totalClaims : 0,
             claimStatus: data.claimStatus || 'PENDING_VERIFICATION',
             claimHistory: Array.isArray(data.claimHistory) ? data.claimHistory : [],
-            updatedAt: data.updatedAt ? String(data.updatedAt) : undefined,
+            updatedAt: data.updatedAt && typeof data.updatedAt.toDate === 'function'
+              ? data.updatedAt.toDate().toISOString()
+              : data.updatedAt ? String(data.updatedAt) : undefined,
           };
           onUpdate(record);
         },

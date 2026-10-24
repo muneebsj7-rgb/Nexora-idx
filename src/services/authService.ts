@@ -475,6 +475,7 @@ export class AuthService {
     const {
       kycTier,
       isEmailVerified,
+      isAdmin,
       id,
       createdAt,
       isDemo,

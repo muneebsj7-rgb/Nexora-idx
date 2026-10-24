@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X, ArrowUpRight, AlertCircle, ShieldCheck } from 'lucide-react';
 import { GradientIcon } from '../ui/GradientIcon';
@@ -11,7 +11,7 @@ interface WithdrawModalProps {
 }
 
 export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, defaultAsset = 'USDT' }) => {
-  const { walletAssets, submitWithdrawalRequest, addToast } = useApp();
+  const { user, walletAssets, submitWithdrawalRequest, addToast } = useApp();
 
   const [selectedSymbol, setSelectedSymbol] = useState(defaultAsset);
   const currentAsset = walletAssets.find((a) => a.symbol === selectedSymbol) || walletAssets[0];
@@ -20,6 +20,16 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, d
   const [amount, setAmount] = useState('');
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && defaultAsset) {
+      setSelectedSymbol(defaultAsset);
+      const target = walletAssets.find((a) => a.symbol === defaultAsset) || walletAssets[0];
+      if (target) {
+        setSelectedNetwork(target.networks[0]);
+      }
+    }
+  }, [isOpen, defaultAsset]);
 
   if (!isOpen) return null;
 
@@ -32,6 +42,15 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, d
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (numAmount <= currentAsset.withdrawFee) {
+      addToast('Invalid Amount', `Withdrawal amount must exceed the network fee (${currentAsset.withdrawFee} ${selectedSymbol}).`, 'error');
+      return;
+    }
+    if (user?.twoFactorEnabled && !/^\d{6}$/.test(twoFactorCode.trim())) {
+      addToast('2FA Required', 'Please enter a valid 6-digit Two-Factor Authentication code.', 'error');
+      return;
+    }
+
     setSubmitting(true);
 
     try {

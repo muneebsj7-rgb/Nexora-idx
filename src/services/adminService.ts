@@ -8,9 +8,6 @@ export interface PendingDepositItem extends Transaction {
 
 export interface AdminSetupStatus {
   isConfigured: boolean;
-  adminEmails: string[];
-  projectId?: string;
-  hasServiceAccount: boolean;
   functionsDeployed: boolean;
   notes: string[];
 }
@@ -22,10 +19,11 @@ export const KNOWN_ADMIN_EMAILS = [
 export class AdminService {
   /**
    * Evaluates if a given user profile has verified administrative credentials.
-   * Checks hardcoded authorized admin emails, profile flags, or custom claims.
+   * Requires a real authenticated account with a verified email.
    */
   static isAuthorizedAdmin(user: UserProfile | null): boolean {
-    if (!user) return false;
+    if (!user || user.isDemo) return false;
+    if (!user.isEmailVerified) return false;
     if (user.isAdmin) return true;
     if (user.email && KNOWN_ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(user.email.toLowerCase())) {
       return true;
@@ -130,18 +128,22 @@ export class AdminService {
 
   /**
    * Checks server-side configuration status for Firebase Admin / Cloud Functions.
+   * Requires an authenticated administrator Bearer token.
    */
   static async fetchSetupStatus(): Promise<AdminSetupStatus> {
+    const token = auth?.currentUser ? await auth.currentUser.getIdToken() : '';
+
     const response = await fetch('/api/admin/setup-status', {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
+      headers: {
+        'Accept': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     });
 
     if (!response.ok) {
       return {
         isConfigured: false,
-        adminEmails: KNOWN_ADMIN_EMAILS,
-        hasServiceAccount: false,
         functionsDeployed: false,
         notes: ['Could not query admin setup status endpoint.'],
       };

@@ -16,7 +16,7 @@
  * B) approveDeposit / rejectDeposit: Callable HTTPS functions invoked directly from the Nexora Mine Admin Desk.
  */
 
-import * as functions from 'firebase-functions';
+import * as functions from 'firebase-functions/v1';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
@@ -26,10 +26,17 @@ if (getApps().length === 0) {
 
 const db = getFirestore();
 
-const ADMIN_EMAILS = [
-  'muneebsj7@gmail.com',
-  ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((s: string) => s.trim().toLowerCase()) : [])
-];
+const ADMIN_EMAILS = Array.from(
+  new Set([
+    'muneebsj7@gmail.com',
+    ...(process.env.ADMIN_EMAILS
+      ? process.env.ADMIN_EMAILS
+          .split(',')
+          .map((s: string) => s.trim().toLowerCase())
+          .filter(Boolean)
+      : []),
+  ])
+);
 
 function isAuthorizedAdminEmail(email?: string): boolean {
   if (!email) return false;
@@ -65,7 +72,7 @@ export const onDepositStatusChanged = functions.firestore
       }
 
       const walletRef = db.doc(`users/${userId}/wallet/${assetSymbol}`);
-      const txRef = change.after.ref;
+      const txRef = db.doc(`users/${userId}/transactions/${txId}`);
 
       try {
         await db.runTransaction(async (transaction) => {
@@ -122,12 +129,12 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
   }
 
   const callerEmail = context.auth.token.email;
-  const isEmailVerified = Boolean(context.auth.token.email_verified);
-  const isCustomAdmin = Boolean(context.auth.token.admin);
-  if (!isCustomAdmin && (!isAuthorizedAdminEmail(callerEmail) || !isEmailVerified)) {
+  const isEmailVerified = context.auth.token.email_verified === true;
+  const isCustomAdmin = context.auth.token.admin === true;
+  if (!isEmailVerified || (!isCustomAdmin && !isAuthorizedAdminEmail(callerEmail))) {
     throw new functions.https.HttpsError(
       'permission-denied',
-      `Caller ${callerEmail} is not authorized or email is not verified.`
+      'Caller is not an authorized administrator with a verified email.'
     );
   }
 
@@ -223,12 +230,12 @@ export const rejectDeposit = functions.https.onCall(async (data: any, context: f
   }
 
   const callerEmail = context.auth.token.email;
-  const isEmailVerified = Boolean(context.auth.token.email_verified);
-  const isCustomAdmin = Boolean(context.auth.token.admin);
-  if (!isCustomAdmin && (!isAuthorizedAdminEmail(callerEmail) || !isEmailVerified)) {
+  const isEmailVerified = context.auth.token.email_verified === true;
+  const isCustomAdmin = context.auth.token.admin === true;
+  if (!isEmailVerified || (!isCustomAdmin && !isAuthorizedAdminEmail(callerEmail))) {
     throw new functions.https.HttpsError(
       'permission-denied',
-      `Caller ${callerEmail} is not authorized or email is not verified.`
+      'Caller is not an authorized administrator with a verified email.'
     );
   }
 

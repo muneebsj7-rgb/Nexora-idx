@@ -178,6 +178,14 @@ function formatFirestoreWalletError(error: unknown, action: string): Error {
   return new Error(`An unexpected error occurred during ${action}.`);
 }
 
+function formatTimestamp(val: unknown): string | undefined {
+  if (!val) return undefined;
+  if (typeof val === 'object' && val !== null && 'toDate' in val && typeof (val as { toDate: () => Date }).toDate === 'function') {
+    return (val as { toDate: () => Date }).toDate().toISOString();
+  }
+  return String(val);
+}
+
 /**
  * Firestore data service for reading authenticated user's wallet assets and transactions.
  * Enforces client read-only balance access and client pending-only transaction requests.
@@ -213,7 +221,7 @@ export class WalletFirestoreService {
             balances[symbol] = {
               balance: typeof data.balance === 'number' ? data.balance : 0,
               lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
-              updatedAt: data.updatedAt ? String(data.updatedAt) : undefined,
+              updatedAt: formatTimestamp(data.updatedAt),
             };
           });
           onUpdate(balances);
@@ -293,15 +301,15 @@ export class WalletFirestoreService {
               note: data.note,
               isDemo: false,
               approvedBy: data.approvedBy,
-              approvedAt: data.approvedAt ? String(data.approvedAt) : undefined,
+              approvedAt: formatTimestamp(data.approvedAt),
               approvalNote: data.approvalNote,
               creditedAmount: typeof data.creditedAmount === 'number' ? data.creditedAmount : undefined,
               creditedAsset: data.creditedAsset,
               walletCredited: Boolean(data.walletCredited),
               rejectedBy: data.rejectedBy,
-              rejectedAt: data.rejectedAt ? String(data.rejectedAt) : undefined,
+              rejectedAt: formatTimestamp(data.rejectedAt),
               rejectionReason: data.rejectionReason,
-              updatedAt: data.updatedAt ? String(data.updatedAt) : undefined,
+              updatedAt: formatTimestamp(data.updatedAt),
             });
           });
 

@@ -18,10 +18,17 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.NODE_ENV === 'production' && process.env.PORT
   ? Number(process.env.PORT)
   : 3000;
-const ADMIN_EMAILS = [
-  'muneebsj7@gmail.com',
-  ...(process.env.ADMIN_EMAILS ? process.env.ADMIN_EMAILS.split(',').map((e) => e.trim().toLowerCase()) : []),
-];
+const ADMIN_EMAILS = Array.from(
+  new Set([
+    'muneebsj7@gmail.com',
+    ...(process.env.ADMIN_EMAILS
+      ? process.env.ADMIN_EMAILS
+          .split(',')
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean)
+      : []),
+  ])
+);
 
 // Initialize Firebase Admin SDK
 let isFirebaseAdminInitialized = false;
@@ -48,7 +55,7 @@ function setupFirebaseAdmin() {
         projectId: parsed.project_id || projectId,
       });
       isFirebaseAdminInitialized = true;
-      console.log('Firebase Admin SDK initialized using FIREBASE_SERVICE_ACCOUNT_KEY.');
+      console.log('Firebase Admin SDK initialized.');
       return;
     }
 
@@ -58,7 +65,7 @@ function setupFirebaseAdmin() {
         projectId,
       });
       isFirebaseAdminInitialized = true;
-      console.log('Firebase Admin SDK initialized using GOOGLE_APPLICATION_CREDENTIALS.');
+      console.log('Firebase Admin SDK initialized using application default credentials.');
       return;
     }
 
@@ -68,12 +75,12 @@ function setupFirebaseAdmin() {
         projectId,
       });
       isFirebaseAdminInitialized = true;
-      console.log(`Firebase Admin initialized with projectId: ${projectId}`);
+      console.log('Firebase Admin initialized with project configuration.');
       return;
     }
   } catch (err: any) {
     adminInitError = err?.message || String(err);
-    console.warn('Firebase Admin SDK initialization notice:', adminInitError);
+    console.warn('Firebase Admin SDK initialization notice: credentials not active.');
   }
 }
 
@@ -90,7 +97,8 @@ interface AdminCaller {
 }
 
 /**
- * Middleware: Verify caller is an authenticated administrator
+ * Middleware: Verify caller is an authenticated administrator.
+ * Never trusts client-supplied flags or static demo tokens.
  */
 async function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -105,20 +113,22 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
   }
 
   try {
-    // 1. Try Firebase Admin token verification if Admin Auth is available
+    // 1. Primary verification via Firebase Admin SDK when initialized
     if (getApps().length > 0) {
       try {
-        const decoded = await getAuth().verifyIdToken(token);
+        const decoded = await getAuth().verifyIdToken(token, true);
         const email = (decoded.email || '').toLowerCase();
         const isEmailVerified = decoded.email_verified === true;
-        const hasAdminRole = decoded.admin === true || (ADMIN_EMAILS.includes(email) && isEmailVerified);
+        const hasCustomAdminClaim = decoded.admin === true;
+        const isAllowlistedAdmin = Boolean(email) && ADMIN_EMAILS.includes(email);
+        const hasAdminRole = isEmailVerified && (hasCustomAdminClaim || isAllowlistedAdmin);
 
         if (!hasAdminRole) {
           res.status(403).json({
             success: false,
             error: !isEmailVerified
-              ? `User email ${email} must be verified before administrative access is granted.`
-              : `User ${email || decoded.uid} does not have administrative privileges.`,
+              ? 'Verified email address is required for administrative access.'
+              : 'Caller does not have administrative privileges.',
           });
           return;
         }
@@ -130,12 +140,16 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
         };
         next();
         return;
-      } catch (adminVerifyErr) {
-        // If admin token verification fails, check if we can verify with Google Identity Toolkit REST API
+      } catch {
+        res.status(401).json({
+          success: false,
+          error: 'Invalid or expired Firebase ID token.',
+        });
+        return;
       }
     }
 
-    // 2. Fallback token verification using Google Identity Toolkit REST API
+    // 2. Fallback token verification using Google Identity Toolkit REST API only when Admin SDK is uninitialized
     const apiKey = process.env.VITE_FIREBASE_API_KEY;
     if (apiKey && !apiKey.toLowerCase().includes('placeholder')) {
       const restResp = await fetch(
@@ -153,14 +167,14 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
         if (userObj) {
           const email = (userObj.email || '').toLowerCase();
           const isEmailVerified = userObj.emailVerified === true;
-          const hasAdminRole = ADMIN_EMAILS.includes(email) && isEmailVerified;
+          const hasAdminRole = Boolean(email) && ADMIN_EMAILS.includes(email) && isEmailVerified;
 
           if (!hasAdminRole) {
             res.status(403).json({
               success: false,
               error: !isEmailVerified
-                ? `User email ${email} must be verified before administrative access is granted.`
-                : `User ${email || userObj.localId} is not in the authorized administrator allowlist.`,
+                ? 'Verified email address is required for administrative access.'
+                : 'Caller does not have administrative privileges.',
             });
             return;
           }
@@ -176,25 +190,14 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
       }
     }
 
-    // Demo/Sandbox fallback: strictly limited to local development and exact demo token
-    if (process.env.NODE_ENV !== 'production' && token === 'demo-admin-token') {
-      (req as any).adminCaller = {
-        uid: 'demo_admin',
-        email: 'muneebsj7@gmail.com',
-        isAdmin: true,
-      };
-      next();
-      return;
-    }
-
     res.status(401).json({
       success: false,
       error: 'Invalid or expired Firebase ID token.',
     });
-  } catch (err: any) {
+  } catch {
     res.status(500).json({
       success: false,
-      error: err?.message || 'Failed to authenticate admin request.',
+      error: 'Failed to authenticate administrative request.',
     });
   }
 }
@@ -211,18 +214,15 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.get('/api/admin/setup-status', (_req, res) => {
+app.get('/api/admin/setup-status', requireAdminAuth, (_req, res) => {
   res.json({
     isConfigured: isFirebaseAdminInitialized,
-    adminEmails: ADMIN_EMAILS,
-    projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || null,
-    hasServiceAccount: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS),
     functionsDeployed: false,
     notes: [
       isFirebaseAdminInitialized
-        ? 'Firebase Admin SDK is initialized.'
-        : 'Firebase Admin SDK credentials not detected in local environment. Set FIREBASE_SERVICE_ACCOUNT_KEY or GOOGLE_APPLICATION_CREDENTIALS for direct server-side database writes.',
-      'Cloud Functions blueprint available at /functions/index.ts for Firebase CLI deployment (firebase deploy --only functions).',
+        ? 'Firebase Admin SDK is initialized for server-side settlement.'
+        : 'Firebase Admin SDK is not initialized on this server instance.',
+      'Cloud Functions blueprint available at /functions/index.ts.',
     ],
   });
 });

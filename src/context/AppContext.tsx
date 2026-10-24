@@ -19,6 +19,20 @@ export interface ToastMessage {
   type: 'success' | 'info' | 'warning' | 'error';
 }
 
+const LOGGED_OUT_MINING_SESSION: MiningSession = {
+  ...INITIAL_MINING_SESSION,
+  status: 'IDLE',
+  hashrateTHs: 0,
+  uptimeSeconds: 0,
+  startedAt: null,
+  todayEstimatedRewardCoin: 0,
+  todayEstimatedRewardUSD: 0,
+  confirmedRewardCoin: 0,
+  acceptedShares: 0,
+  rejectedShares: 0,
+  isSimulated: true,
+};
+
 interface AppContextType {
   user: UserProfile | null;
   isAuthenticated: boolean;
@@ -71,10 +85,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isMarketsLive, setIsMarketsLive] = useState<boolean>(false);
   const [lastMarketUpdate, setLastMarketUpdate] = useState<Date>(new Date());
   
-  const [miningSession, setMiningSession] = useState<MiningSession>(INITIAL_MINING_SESSION);
-  const [walletAssets, setWalletAssets] = useState<WalletAsset[]>(INITIAL_WALLET_ASSETS);
-  const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
-  const [dailyRewards, setDailyRewards] = useState<DailyReward[]>(INITIAL_DAILY_REWARDS);
+  const [miningSession, setMiningSession] = useState<MiningSession>(LOGGED_OUT_MINING_SESSION);
+  const [walletAssets, setWalletAssets] = useState<WalletAsset[]>(
+    INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 }))
+  );
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [dailyRewards, setDailyRewards] = useState<DailyReward[]>(
+    INITIAL_DAILY_REWARDS.map((r, idx) => ({ ...r, isClaimed: false, isToday: idx === 0 }))
+  );
   const [earnTasks, setEarnTasks] = useState<EarnTask[]>(INITIAL_EARN_TASKS);
   
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -94,12 +112,39 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   }, []);
 
+  // Sync security task completion statuses with current user state
+  useEffect(() => {
+    setEarnTasks((prev) =>
+      prev.map((task) => {
+        if (task.status === 'CLAIMED') return task;
+        if (task.id === 'task_verify_email') {
+          if (!user) return { ...task, status: 'AVAILABLE' };
+          return {
+            ...task,
+            status: user.isEmailVerified || user.isDemo ? 'COMPLETED' : 'AVAILABLE',
+          };
+        }
+        if (task.id === 'task_2fa') {
+          if (!user) return { ...task, status: 'AVAILABLE' };
+          return {
+            ...task,
+            status: user.twoFactorEnabled ? 'COMPLETED' : 'AVAILABLE',
+          };
+        }
+        return task;
+      })
+    );
+  }, [user?.id, user?.isEmailVerified, user?.twoFactorEnabled, user?.isDemo]);
+
   // Real-time Firestore sync for Wallet Balances, Transactions, Mining Session & Daily Streak
   useEffect(() => {
     if (user && !user.isDemo) {
       // Baseline for real authenticated accounts: 0.00 until funded and confirmed
       setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
       setTransactions([]);
+      setMiningSession(LOGGED_OUT_MINING_SESSION);
+      setDailyRewards(DailyRewardsFirestoreService.computeDailyRewardsState(null));
+      setDailyStreakRecord(null);
 
       // 1. Subscribe to users/{uid}/wallet subcollection (Read-only on client)
       const unsubWallet = WalletFirestoreService.subscribeUserWallet(
@@ -164,13 +209,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         unsubMining();
         unsubStreak();
       };
-    } else {
-      // Demo / sandbox session: load initial simulated demo assets, transactions, mining session & rewards
+    } else if (user && user.isDemo) {
+      // Explicit Demo / sandbox session: load initial simulated demo assets, transactions, mining session & rewards
       setWalletAssets(INITIAL_WALLET_ASSETS);
       setTransactions(INITIAL_TRANSACTIONS);
       setMiningSession(INITIAL_MINING_SESSION);
       setDailyRewards(INITIAL_DAILY_REWARDS);
       setDailyStreakRecord(null);
+    } else {
+      // Logged-out visitor: zeroed balances, empty transactions, idle session
+      setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+      setTransactions([]);
+      setMiningSession(LOGGED_OUT_MINING_SESSION);
+      setDailyRewards(INITIAL_DAILY_REWARDS.map((r, idx) => ({ ...r, isClaimed: false, isToday: idx === 0 })));
+      setDailyStreakRecord(null);
+      setEarnTasks(INITIAL_EARN_TASKS.map((t) => ({ ...t, status: t.id === 'task_mine_24h' ? 'IN_PROGRESS' : 'AVAILABLE' })));
     }
   }, [user?.id, user?.isDemo]);
 
@@ -184,6 +237,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const openAuthModal = (mode: 'login' | 'register' | 'forgot' = 'login') => {
+    setAuthModalMode(mode);
+    setAuthModalOpen(true);
+  };
+
+  const closeAuthModal = () => {
+    setAuthModalOpen(false);
   };
 
   const updateUser = async (updates: Partial<UserProfile>): Promise<void> => {
@@ -236,7 +298,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Mining simulated progress loop
   useEffect(() => {
-    if (miningSession.status !== 'ACTIVE') return;
+    if (miningSession.status !== 'ACTIVE' || !user) return;
 
     const timer = setInterval(() => {
       setMiningSession((prev) => {
@@ -257,10 +319,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [miningSession.status, markets]);
+  }, [miningSession.status, markets, user]);
 
   const toggleMining = async () => {
-    if (user && !user.isDemo) {
+    if (!user) {
+      openAuthModal('login');
+      addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to start cloud mining.', 'warning');
+      return;
+    }
+
+    if (!user.isDemo) {
       try {
         const updated = await MiningFirestoreService.toggleMiningSession(user.id, miningSession);
         setMiningSession(updated);
@@ -292,7 +360,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const setHardwareProfile = async (profile: 'Eco' | 'Balanced' | 'Turbo Overclock') => {
-    if (user && !user.isDemo) {
+    if (!user) {
+      openAuthModal('login');
+      addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to configure hardware profiles.', 'warning');
+      return;
+    }
+
+    if (!user.isDemo) {
       try {
         await MiningFirestoreService.updateHardwareProfile(user.id, profile, miningSession);
         let multiplier = 1.0;
@@ -336,7 +410,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const claimDailyReward = async (day: number) => {
-    if (user && !user.isDemo) {
+    if (!user) {
+      openAuthModal('login');
+      addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to claim daily streak rewards.', 'warning');
+      return;
+    }
+
+    if (!user.isDemo) {
       try {
         const result = await DailyRewardsFirestoreService.claimDailyReward(user.id, day, dailyStreakRecord);
         setDailyStreakRecord(result.streakRecord);
@@ -383,7 +463,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       setDailyRewards((prev) =>
         prev.map((d) => {
-          if (d.day === day) return { ...d, isClaimed: true };
+          if (d.day === day) return { ...d, isClaimed: true, isToday: false };
           if (d.day === day + 1) return { ...d, isToday: true };
           return d;
         })
@@ -417,6 +497,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const claimTaskReward = async (taskId: string) => {
+    if (!user) {
+      openAuthModal('login');
+      addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to claim task bounties.', 'warning');
+      return;
+    }
+
     const task = earnTasks.find((t) => t.id === taskId);
     if (!task) return;
     if (task.status === 'CLAIMED') {
@@ -434,7 +520,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // ignore
     }
 
-    if (user && !user.isDemo) {
+    if (!user.isDemo) {
       try {
         const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         if (db) {
@@ -494,6 +580,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     amount: number,
     txHash: string
   ): Promise<{ success: boolean; message: string }> => {
+    if (!user) {
+      openAuthModal('login');
+      return { success: false, message: 'Please sign in or enter Sandbox Demo Mode before submitting a deposit.' };
+    }
     if (!amount || amount <= 0) {
       return { success: false, message: 'Deposit amount must be greater than zero.' };
     }
@@ -505,7 +595,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const usdRate = asset?.usdRate || 1;
 
     // Check if user is an authenticated Firebase user
-    if (user && !user.isDemo) {
+    if (!user.isDemo) {
       try {
         const newTx = await WalletFirestoreService.submitDepositRequest(user.id, {
           assetSymbol,
@@ -571,12 +661,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     amount: number,
     address: string
   ): Promise<{ success: boolean; message: string }> => {
+    if (!user) {
+      openAuthModal('login');
+      return { success: false, message: 'Please sign in or enter Sandbox Demo Mode before requesting a withdrawal.' };
+    }
+
     const asset = walletAssets.find((a) => a.symbol === assetSymbol);
     if (!asset) {
       return { success: false, message: 'Asset not found.' };
     }
     if (amount < asset.minWithdraw) {
       return { success: false, message: `Minimum withdrawal is ${asset.minWithdraw} ${asset.symbol}.` };
+    }
+    if (amount <= asset.withdrawFee) {
+      return { success: false, message: `Withdrawal amount must exceed the network fee of ${asset.withdrawFee} ${asset.symbol}.` };
     }
     if (amount > asset.balance) {
       return { success: false, message: 'Insufficient available balance.' };
@@ -585,7 +683,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return { success: false, message: 'Please provide a valid destination wallet address.' };
     }
 
-    if (user && !user.isDemo) {
+    if (!user.isDemo) {
       try {
         const newTx = await WalletFirestoreService.submitWithdrawalRequest(user.id, {
           assetSymbol,
@@ -662,9 +760,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const submitPlanOrder = (planName: string, priceUSD: number) => {
+    if (!user) {
+      openAuthModal('login');
+      return {
+        success: false,
+        message: 'Please sign in or enter Sandbox Demo Mode to select a cloud mining contract.',
+      };
+    }
+
     // 1. Financial Security: Real authenticated accounts cannot make client-side balance changes or fake payouts.
     // Cloud contract order processing requires trusted server-side order and payment settlement.
-    if (user && !user.isDemo) {
+    if (!user.isDemo) {
       return {
         success: false,
         message: 'Cloud contract purchase for authenticated accounts is disabled until trusted server-side order processing is implemented. Direct client balance changes and hashrate upgrades are blocked for security.',
@@ -710,6 +816,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const logged = await AuthService.login(email, pass);
       setUser(logged);
       setAuthModalOpen(false);
+      setActiveTab('home');
       addToast('Welcome Back', `Logged in as ${logged.displayName || logged.email}`, 'success');
     } catch (error: any) {
       const msg = error?.message || 'Login failed. Please check your credentials.';
@@ -723,6 +830,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const registered = await AuthService.register(email, pass, name, ref);
       setUser(registered);
       setAuthModalOpen(false);
+      setActiveTab('home');
       addToast('Account Created', 'Registration successful! Verification email sent.', 'success');
     } catch (error: any) {
       const msg = error?.message || 'Registration failed. Please check your credentials.';
@@ -735,22 +843,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const demo = AuthService.loginAsDemo();
     setUser(demo);
     setAuthModalOpen(false);
+    setActiveTab('home');
     addToast('Sandbox Demo Mode Active', 'Loaded offline demo session. Not connected to Firebase.', 'warning');
   };
 
   const logoutUser = async () => {
     await AuthService.logout();
     setUser(null);
+    setActiveTab('home');
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
-  };
-
-  const openAuthModal = (mode: 'login' | 'register' | 'forgot' = 'login') => {
-    setAuthModalMode(mode);
-    setAuthModalOpen(true);
-  };
-
-  const closeAuthModal = () => {
-    setAuthModalOpen(false);
   };
 
   const toggleMobileFrame = () => {

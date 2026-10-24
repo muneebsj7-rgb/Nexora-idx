@@ -30,7 +30,7 @@ import { GradientIcon } from '../ui/GradientIcon';
 import { AdminService, PendingDepositItem, AdminSetupStatus } from '../../services/adminService';
 
 export const WalletScreen: React.FC = () => {
-  const { user, walletAssets, transactions, addToast } = useApp();
+  const { user, walletAssets, transactions, addToast, openAuthModal } = useApp();
 
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -48,8 +48,9 @@ export const WalletScreen: React.FC = () => {
   const [adminSetupStatus, setAdminSetupStatus] = useState<AdminSetupStatus | null>(null);
   const [showSetupDetails, setShowSetupDetails] = useState(false);
 
-  const totalUSD = walletAssets.reduce((acc, a) => acc + a.balance * a.usdRate, 0);
+  const availableUSD = walletAssets.reduce((acc, a) => acc + a.balance * a.usdRate, 0);
   const totalLockedUSD = walletAssets.reduce((acc, a) => acc + a.lockedBalance * a.usdRate, 0);
+  const totalUSD = availableUSD + totalLockedUSD;
 
   // Load pending deposits if authorized admin
   const loadAdminData = async () => {
@@ -130,11 +131,21 @@ export const WalletScreen: React.FC = () => {
   });
 
   const handleOpenDeposit = (symbol: string) => {
+    if (!user) {
+      openAuthModal('login');
+      addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to deposit funds.', 'warning');
+      return;
+    }
     setSelectedAssetSymbol(symbol);
     setDepositOpen(true);
   };
 
   const handleOpenWithdraw = (symbol: string) => {
+    if (!user) {
+      openAuthModal('login');
+      addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to withdraw funds.', 'warning');
+      return;
+    }
     setSelectedAssetSymbol(symbol);
     setWithdrawOpen(true);
   };
@@ -241,18 +252,16 @@ export const WalletScreen: React.FC = () => {
               {showSetupDetails && adminSetupStatus && (
                 <div className="p-3.5 rounded-2xl bg-[#080B12] border border-[#253144] text-xs space-y-2 font-mono text-[11px]">
                   <div className="flex justify-between text-[#98A6BA]">
-                    <span>Admin Allowlist:</span>
-                    <span className="text-[#00D6A3]">{adminSetupStatus.adminEmails.join(', ')}</span>
-                  </div>
-                  <div className="flex justify-between text-[#98A6BA]">
                     <span>Server Admin Ready:</span>
                     <span className={adminSetupStatus.isConfigured ? 'text-[#00D6A3]' : 'text-[#F3B64B]'}>
-                      {adminSetupStatus.isConfigured ? 'Yes (Credentials Connected)' : 'Deferred / Requires Service Account'}
+                      {adminSetupStatus.isConfigured ? 'Yes (Backend Active)' : 'Deferred / Unconfigured'}
                     </span>
                   </div>
                   <div className="flex justify-between text-[#98A6BA]">
-                    <span>Cloud Function Blueprint:</span>
-                    <span className="text-[#25B9F3]">/functions/index.ts (Ready for Firebase CLI)</span>
+                    <span>Cloud Functions Status:</span>
+                    <span className="text-[#25B9F3]">
+                      {adminSetupStatus.functionsDeployed ? 'Deployed' : 'Blueprint Ready (/functions/index.ts)'}
+                    </span>
                   </div>
                   <ul className="list-disc pl-4 text-[10px] text-[#98A6BA] space-y-0.5 pt-1 border-t border-[#253144]">
                     {adminSetupStatus.notes.map((n, i) => (
@@ -263,31 +272,33 @@ export const WalletScreen: React.FC = () => {
               )}
 
               {/* Pending Queue List */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs text-[#98A6BA] font-semibold px-1">
-                  <span>Pending Deposit Queue ({adminPendingDeposits.length + transactions.filter(t => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION').length})</span>
-                </div>
-
-                {adminPendingDeposits.length === 0 && transactions.filter(t => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION').length === 0 ? (
-                  <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
-                    No pending deposits awaiting verification. All deposits are either completed or unsubmitted.
-                  </div>
-                ) : (() => {
-                  const map = new Map<string, PendingDepositItem>();
-                  transactions
-                    .filter((t) => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION')
-                    .forEach((t) => {
-                      map.set(t.id, {
-                        ...t,
-                        userId: t.userId || user?.id || '',
-                      });
+              {(() => {
+                const map = new Map<string, PendingDepositItem>();
+                transactions
+                  .filter((t) => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION')
+                  .forEach((t) => {
+                    map.set(t.id, {
+                      ...t,
+                      userId: t.userId || user?.id || '',
                     });
-                  adminPendingDeposits.forEach((d) => {
-                    map.set(d.id, d);
                   });
-                  const pendingList: PendingDepositItem[] = Array.from(map.values());
+                adminPendingDeposits.forEach((d) => {
+                  map.set(d.id, d);
+                });
+                const pendingList: PendingDepositItem[] = Array.from(map.values());
 
-                  return pendingList.map((deposit) => (
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-[#98A6BA] font-semibold px-1">
+                      <span>Pending Deposit Queue ({pendingList.length})</span>
+                    </div>
+
+                    {pendingList.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
+                        No pending deposits awaiting verification. All deposits are either completed or unsubmitted.
+                      </div>
+                    ) : (
+                      pendingList.map((deposit) => (
                     <div
                       key={deposit.id}
                       className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
@@ -350,9 +361,11 @@ export const WalletScreen: React.FC = () => {
                         </button>
                       </div>
                     </div>
-                  ));
-                })()}
-              </div>
+                      ))
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -383,7 +396,7 @@ export const WalletScreen: React.FC = () => {
               <span>
                 Available:{' '}
                 <strong className="text-[#00D6A3] font-mono">
-                  ${(totalUSD - totalLockedUSD).toFixed(2)}
+                  ${availableUSD.toFixed(2)}
                 </strong>
               </span>
               <span>

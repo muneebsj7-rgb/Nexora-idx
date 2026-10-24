@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X, Copy, Check, AlertTriangle, QrCode, ArrowDownToLine } from 'lucide-react';
 import { GradientIcon } from '../ui/GradientIcon';
@@ -20,6 +20,16 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
   const [depositAmount, setDepositAmount] = useState('');
   const [txHash, setTxHash] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && defaultAsset) {
+      setSelectedSymbol(defaultAsset);
+      const target = walletAssets.find((a) => a.symbol === defaultAsset) || walletAssets[0];
+      if (target) {
+        setSelectedNetwork(target.networks[0]);
+      }
+    }
+  }, [isOpen, defaultAsset]);
 
   if (!isOpen) return null;
 

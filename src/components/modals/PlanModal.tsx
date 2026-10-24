@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { MINING_PLANS } from '../../services/miningService';
 import { X, Pickaxe, Zap, CheckCircle2, ShieldAlert } from 'lucide-react';
@@ -14,6 +14,12 @@ export const PlanModal: React.FC<PlanModalProps> = ({ isOpen, onClose, initialPl
   const { user, submitPlanOrder, addToast } = useApp();
   const [selectedPlanId, setSelectedPlanId] = useState(initialPlanId || MINING_PLANS[0].id);
   const [ordering, setOrdering] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && initialPlanId) {
+      setSelectedPlanId(initialPlanId);
+    }
+  }, [isOpen, initialPlanId]);
 
   if (!isOpen) return null;
 

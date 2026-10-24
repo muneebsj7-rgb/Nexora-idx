@@ -218,7 +218,9 @@ export class MiningFirestoreService {
             hardwareProfile,
             planId: data.planId,
             lastSessionId: data.lastSessionId,
-            updatedAt: data.updatedAt ? String(data.updatedAt) : undefined,
+            updatedAt: data.updatedAt && typeof data.updatedAt.toDate === 'function'
+              ? data.updatedAt.toDate().toISOString()
+              : data.updatedAt ? String(data.updatedAt) : undefined,
             isSimulated: true,
           };
           onUpdate(session);
@@ -307,6 +309,7 @@ export class MiningFirestoreService {
     }
 
     const updates = {
+      userId: uid,
       status: newStatus,
       hashrateTHs: targetHashrate,
       startedAt: !isCurrentlyActive ? nowIso : currentSession.startedAt,
@@ -360,6 +363,8 @@ export class MiningFirestoreService {
       await setDoc(
         sessionDocRef,
         {
+          userId: uid,
+          status: currentSession.status || 'IDLE',
           hardwareProfile: profile,
           hashrateTHs: newHashrate,
           efficiencyWTH: power,

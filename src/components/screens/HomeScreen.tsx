@@ -73,8 +73,8 @@ export const HomeScreen: React.FC = () => {
   const [selectedChartAsset, setSelectedChartAsset] = useState<string>('BTC');
   const [claimingDaily, setClaimingDaily] = useState(false);
 
-  // Calculate total balance in USD from wallet assets
-  const totalBalanceUSD = walletAssets.reduce((acc, curr) => {
+  // Calculate available, locked, and total portfolio balance in USD from wallet assets
+  const availableBalanceUSD = walletAssets.reduce((acc, curr) => {
     return acc + curr.balance * curr.usdRate;
   }, 0);
 
@@ -82,7 +82,7 @@ export const HomeScreen: React.FC = () => {
     return acc + curr.lockedBalance * curr.usdRate;
   }, 0);
 
-  const availableBalanceUSD = Math.max(0, totalBalanceUSD - totalLockedUSD);
+  const totalBalanceUSD = availableBalanceUSD + totalLockedUSD;
 
   const btcRate = markets.find((m) => m.symbol === 'BTC')?.price || 94250;
   const totalBtcEquivalent = btcRate > 0 ? totalBalanceUSD / btcRate : 0;
@@ -252,14 +252,28 @@ export const HomeScreen: React.FC = () => {
           {/* Balance Action Buttons */}
           <div className="mt-5 flex items-center gap-3">
             <button
-              onClick={() => setDepositModalOpen(true)}
+              onClick={() => {
+                if (!user) {
+                  openAuthModal('login');
+                  addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to deposit funds.', 'warning');
+                  return;
+                }
+                setDepositModalOpen(true);
+              }}
               className="flex-1 py-2.5 px-4 rounded-xl bg-[#00D6A3] text-[#080B12] hover:bg-[#19C784] font-bold text-xs sm:text-sm transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2 group"
             >
               <ArrowDownLeft className="w-4 h-4 stroke-[2.5px] group-hover:-translate-y-0.5 transition-transform" />
               <span>Deposit Funds</span>
             </button>
             <button
-              onClick={() => setWithdrawModalOpen(true)}
+              onClick={() => {
+                if (!user) {
+                  openAuthModal('login');
+                  addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to withdraw funds.', 'warning');
+                  return;
+                }
+                setWithdrawModalOpen(true);
+              }}
               className="flex-1 py-2.5 px-4 rounded-xl bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] font-bold text-xs sm:text-sm border border-[#253144] transition-all active:scale-[0.98] flex items-center justify-center gap-2 group"
             >
               <ArrowUpRight className="w-4 h-4 text-[#00D6A3] stroke-[2.5px] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />

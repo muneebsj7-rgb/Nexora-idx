@@ -16,7 +16,7 @@ import {
 import { GradientIcon } from '../ui/GradientIcon';
 
 export const EarnScreen: React.FC = () => {
-  const { user, dailyRewards, dailyStreakRecord, earnTasks, claimDailyReward, claimTaskReward, addToast } = useApp();
+  const { user, dailyRewards, dailyStreakRecord, earnTasks, claimDailyReward, claimTaskReward, addToast, setActiveTab, openAuthModal } = useApp();
 
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -278,10 +278,19 @@ export const EarnScreen: React.FC = () => {
                     onClick={() => {
                       if (isCompleted) {
                         claimTaskReward(task.id);
+                      } else if (!user) {
+                        openAuthModal('login');
+                        addToast('Sign In Required', 'Please sign in or enter Sandbox Demo Mode to start tasks.', 'warning');
+                      } else if (task.category === 'Security') {
+                        setActiveTab('profile');
+                        addToast('Security Settings', 'Complete this requirement in your Profile & Security Settings.', 'info');
+                      } else if (task.category === 'Mining') {
+                        setActiveTab('mining');
+                        addToast('Cloud Mining Terminal', 'Keep your cloud mining rig active to complete this milestone.', 'info');
                       } else if (task.actionUrl) {
-                        window.open(task.actionUrl, '_blank');
+                        addToast('External Community Link', `Visit ${task.actionUrl} in a new tab to join the Nexora community.`, 'info');
                       } else {
-                        addToast('Task In Progress', 'Please complete the requirements in your profile settings.', 'info');
+                        addToast('Task Active', 'Invite a partner using your referral code above to unlock this bounty.', 'info');
                       }
                     }}
                     disabled={isClaimed}
