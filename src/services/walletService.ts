@@ -2,13 +2,14 @@ import {
   collection,
   doc,
   getDocs,
+  getDocsFromCache,
   setDoc,
   onSnapshot,
   serverTimestamp,
   FirestoreError,
 } from 'firebase/firestore';
 import { WalletAsset, Transaction } from '../types';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 
 export const INITIAL_WALLET_ASSETS: WalletAsset[] = [
   {
@@ -244,8 +245,8 @@ export class WalletFirestoreService {
   static async fetchUserWallet(uid: string): Promise<Record<string, WalletBalanceRecord>> {
     if (!db) return {};
 
+    const walletColRef = collection(db, 'users', uid, 'wallet');
     try {
-      const walletColRef = collection(db, 'users', uid, 'wallet');
       const snap = await getDocs(walletColRef);
       const balances: Record<string, WalletBalanceRecord> = {};
       snap.forEach((docSnap) => {
@@ -258,8 +259,22 @@ export class WalletFirestoreService {
       });
       return balances;
     } catch (error) {
-      console.error(`Error reading users/${uid}/wallet:`, error);
-      throw formatFirestoreWalletError(error, 'reading wallet assets');
+      try {
+        const cachedSnap = await getDocsFromCache(walletColRef);
+        const balances: Record<string, WalletBalanceRecord> = {};
+        cachedSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          const symbol = docSnap.id.toUpperCase();
+          balances[symbol] = {
+            balance: typeof data.balance === 'number' ? data.balance : 0,
+            lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
+          };
+        });
+        return balances;
+      } catch {
+        console.warn(`Firestore wallet read notice for users/${uid}/wallet:`, error);
+        throw formatFirestoreWalletError(error, 'reading wallet assets');
+      }
     }
   }
 
@@ -292,23 +307,42 @@ export class WalletFirestoreService {
               amount: typeof data.amount === 'number' ? data.amount : 0,
               amountUSD: typeof data.amountUSD === 'number' ? data.amountUSD : 0,
               fee: typeof data.fee === 'number' ? data.fee : 0,
+              netPayoutAmount: typeof data.netPayoutAmount === 'number' ? data.netPayoutAmount : undefined,
               status: data.status,
               timestamp: data.timestamp || new Date().toISOString(),
               txHash: data.txHash,
+              payoutTxHash: data.payoutTxHash,
               network: data.network,
               toAddress: data.toAddress,
               fromAddress: data.fromAddress,
               note: data.note,
               isDemo: false,
               approvedBy: data.approvedBy,
+              approvedByUid: data.approvedByUid,
               approvedAt: formatTimestamp(data.approvedAt),
               approvalNote: data.approvalNote,
               creditedAmount: typeof data.creditedAmount === 'number' ? data.creditedAmount : undefined,
               creditedAsset: data.creditedAsset,
               walletCredited: Boolean(data.walletCredited),
+              walletSettled: Boolean(data.walletSettled),
+              reservedFromBalance: Boolean(data.reservedFromBalance),
+              refunded: Boolean(data.refunded),
+              refundedAt: formatTimestamp(data.refundedAt),
+              settlementId: data.settlementId,
+              settlementStatus: data.settlementStatus,
               rejectedBy: data.rejectedBy,
+              rejectedByUid: data.rejectedByUid,
               rejectedAt: formatTimestamp(data.rejectedAt),
               rejectionReason: data.rejectionReason,
+              claimDate: data.claimDate,
+              rewardDay:
+                typeof data.rewardDay === 'string' || typeof data.rewardDay === 'number'
+                  ? data.rewardDay
+                  : undefined,
+              streakDay: typeof data.streakDay === 'number' ? data.streakDay : undefined,
+              taskId: data.taskId,
+              rewardSource: data.rewardSource,
+              metadataBackfilledFrom: data.metadataBackfilledFrom,
               updatedAt: formatTimestamp(data.updatedAt),
             });
           });
@@ -391,17 +425,16 @@ export class WalletFirestoreService {
       });
       return newTx;
     } catch (error) {
-      console.error(`Error writing users/${uid}/transactions/${txId}:`, error);
+      console.warn(`Error writing users/${uid}/transactions/${txId}:`, error);
       throw formatFirestoreWalletError(error, 'submitting deposit request');
     }
   }
 
   /**
-   * Submits a pending withdrawal request to users/{uid}/transactions/{transactionId}.
-   * Security constraints:
-   * - Status must strictly be PENDING_REVIEW
-   * - Client cannot self-approve or mark as completed
-   * - Wallet balances are read-only on client; updating balances requires a trusted backend (e.g., Firebase Cloud Functions with Admin SDK)
+   * Submits a pending withdrawal request and atomically reserves funds into `lockedBalance`
+   * via the server-side `/api/wallet/withdraw` endpoint (preventing concurrent double-spending).
+   * Falls back to client-side `PENDING_REVIEW` request creation only if server Admin credentials
+   * are not mounted (`MISSING_ADMIN_CREDENTIALS`).
    */
   static async submitWithdrawalRequest(
     uid: string,
@@ -414,6 +447,9 @@ export class WalletFirestoreService {
     if (!params.amount || params.amount <= 0) {
       throw new Error('Withdrawal amount must be greater than zero.');
     }
+    if (params.amount <= params.fee) {
+      throw new Error(`Withdrawal amount must exceed the network fee of ${params.fee} ${params.assetSymbol}.`);
+    }
     if (!params.address || params.address.trim().length < 12) {
       throw new Error('Please enter a valid recipient blockchain address.');
     }
@@ -422,6 +458,52 @@ export class WalletFirestoreService {
     }
 
     const cleanSymbol = params.assetSymbol.toUpperCase();
+    const netPayoutAmount = Number((params.amount - params.fee).toFixed(8));
+
+    // 1. Primary path: Reserve withdrawal funds into `lockedBalance` via server-side atomic transaction
+    if (auth?.currentUser) {
+      try {
+        const token = await auth.currentUser.getIdToken();
+        const resp = await fetch('/api/wallet/withdraw', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            assetSymbol: cleanSymbol,
+            network: params.network,
+            amount: params.amount,
+            fee: params.fee,
+            address: params.address.trim(),
+            usdRate: params.usdRate,
+          }),
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.success && data.transaction) {
+          return {
+            ...data.transaction,
+            isDemo: false,
+          } as Transaction;
+        }
+
+        // If server rejected due to insufficient balance or validation error, surface it immediately
+        if (resp.status !== 503 && data.code !== 'MISSING_ADMIN_CREDENTIALS') {
+          throw new Error(data.error || `Withdrawal failed (HTTP ${resp.status})`);
+        }
+      } catch (err: any) {
+        if (
+          err instanceof Error &&
+          !err.message.includes('Failed to fetch') &&
+          !err.message.includes('NetworkError')
+        ) {
+          throw err;
+        }
+      }
+    }
+
+    // 2. Fallback path when server Admin SDK lacks credentials: write pending request via client SDK
     const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const txDocRef = doc(db, 'users', uid, 'transactions', txId);
 
@@ -433,11 +515,12 @@ export class WalletFirestoreService {
       amount: params.amount,
       amountUSD: Number((params.amount * params.usdRate).toFixed(2)),
       fee: params.fee,
+      netPayoutAmount,
       status: 'PENDING_REVIEW',
       timestamp: new Date().toISOString(),
       network: params.network,
       toAddress: params.address.trim(),
-      note: 'Withdrawal Request Submitted (Pending Review)',
+      note: `Withdrawal Request (${netPayoutAmount} ${cleanSymbol} net after ${params.fee} ${cleanSymbol} fee)`,
       isDemo: false,
     };
 
@@ -450,6 +533,7 @@ export class WalletFirestoreService {
         amount: newTx.amount,
         amountUSD: newTx.amountUSD,
         fee: newTx.fee,
+        netPayoutAmount: newTx.netPayoutAmount,
         status: newTx.status,
         timestamp: newTx.timestamp,
         network: newTx.network,
@@ -459,7 +543,7 @@ export class WalletFirestoreService {
       });
       return newTx;
     } catch (error) {
-      console.error(`Error writing users/${uid}/transactions/${txId}:`, error);
+      console.warn(`Error writing users/${uid}/transactions/${txId}:`, error);
       throw formatFirestoreWalletError(error, 'submitting withdrawal request');
     }
   }

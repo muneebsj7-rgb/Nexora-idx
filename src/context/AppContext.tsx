@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { UserProfile, CryptoMarket, MiningSession, WalletAsset, Transaction, DailyReward, EarnTask, DailyStreakRecord } from '../types';
+import { UserProfile, CryptoMarket, MiningSession, WalletAsset, Transaction, DailyReward, EarnTask, DailyStreakRecord, MarketConnectionStatus } from '../types';
 import { AuthService } from '../services/authService';
-import { fetchLiveMarketTickers } from '../services/marketService';
+import { fetchLiveMarketTickers, subscribeMarketTickersWebSocket, SUPPORTED_BINANCE_PAIRS } from '../services/marketService';
 import { INITIAL_MINING_SESSION, MiningFirestoreService } from '../services/miningService';
 import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService } from '../services/walletService';
 import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS, DailyRewardsFirestoreService } from '../services/earnService';
@@ -42,6 +42,8 @@ interface AppContextType {
   setAccentTheme: (theme: AccentTheme) => void;
   markets: CryptoMarket[];
   isMarketsLive: boolean;
+  marketConnectionStatus: MarketConnectionStatus;
+  marketError: string | null;
   lastMarketUpdate: Date;
   refreshMarkets: () => Promise<void>;
   miningSession: MiningSession;
@@ -56,6 +58,7 @@ interface AppContextType {
   claimTaskReward: (taskId: string) => Promise<void> | void;
   submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => Promise<{ success: boolean; message: string }>;
   submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => Promise<{ success: boolean; message: string }>;
+  refreshWalletState: () => Promise<void>;
   submitPlanOrder: (planName: string, priceUSD: number) => { success: boolean; message: string };
   toasts: ToastMessage[];
   addToast: (title: string, message: string, type?: ToastMessage['type']) => void;
@@ -83,6 +86,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const [markets, setMarkets] = useState<CryptoMarket[]>([]);
   const [isMarketsLive, setIsMarketsLive] = useState<boolean>(false);
+  const [marketConnectionStatus, setMarketConnectionStatus] = useState<MarketConnectionStatus>('CONNECTING');
+  const [marketError, setMarketError] = useState<string | null>(null);
   const [lastMarketUpdate, setLastMarketUpdate] = useState<Date>(new Date());
   
   const [miningSession, setMiningSession] = useState<MiningSession>(LOGGED_OUT_MINING_SESSION);
@@ -282,19 +287,117 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const refreshMarkets = async () => {
-    const res = await fetchLiveMarketTickers();
-    setMarkets(res.markets);
-    setIsMarketsLive(res.isLive);
-    setLastMarketUpdate(res.lastUpdated);
+    try {
+      const res = await fetchLiveMarketTickers();
+      setMarkets((prev) =>
+        res.markets.map((fresh) => {
+          const existing = prev.find((p) => p.pair === fresh.pair);
+          const tickDirection =
+            existing && fresh.price !== existing.price
+              ? fresh.price > existing.price
+                ? 'up'
+                : 'down'
+              : existing?.tickDirection || 'neutral';
+          return { ...fresh, tickDirection };
+        })
+      );
+      setIsMarketsLive(res.isLive);
+      setLastMarketUpdate(res.lastUpdated);
+      setMarketError(null);
+    } catch (err: any) {
+      setIsMarketsLive(false);
+      setMarketError(err?.message || 'Unable to load Binance Spot market snapshot.');
+    }
   };
 
   useEffect(() => {
     refreshMarkets();
-    const interval = setInterval(() => {
+
+    const unsubscribeWs = subscribeMarketTickersWebSocket(
+      (batch) => {
+        setMarkets((prev) => {
+          const baseList: CryptoMarket[] =
+            prev.length > 0
+              ? prev
+              : SUPPORTED_BINANCE_PAIRS.map((meta) => ({
+                  symbol: meta.symbol,
+                  pair: meta.pair,
+                  displayPair: meta.displayPair,
+                  name: meta.name,
+                  price: 0,
+                  priceChange24h: 0,
+                  change24h: 0,
+                  high24h: 0,
+                  low24h: 0,
+                  volume24h: 0,
+                  baseVolume24h: 0,
+                  lastUpdated: new Date().toISOString(),
+                  tickDirection: 'neutral',
+                  isPoW: meta.isPoW,
+                  algorithm: meta.algorithm,
+                }));
+
+          return baseList
+            .map((coin) => {
+              const tick = batch[coin.pair];
+              if (!tick) return coin;
+              const tickDirection: 'up' | 'down' | 'neutral' =
+                coin.price > 0 && tick.price !== coin.price
+                  ? tick.price > coin.price
+                    ? 'up'
+                    : 'down'
+                  : coin.tickDirection || 'neutral';
+              return {
+                ...coin,
+                price: tick.price,
+                priceChange24h: tick.priceChange24h,
+                change24h: tick.change24h,
+                high24h: tick.high24h,
+                low24h: tick.low24h,
+                baseVolume24h: tick.baseVolume24h,
+                volume24h: tick.volume24h,
+                lastUpdated: tick.eventTime,
+                tickDirection,
+              };
+            })
+            .filter((c) => c.price > 0);
+        });
+        setIsMarketsLive(true);
+        setMarketError(null);
+        setLastMarketUpdate(new Date());
+      },
+      (status) => {
+        setMarketConnectionStatus(status);
+        if (status === 'CONNECTED') {
+          setIsMarketsLive(true);
+        }
+      }
+    );
+
+    const fallbackInterval = setInterval(() => {
       refreshMarkets();
-    }, 10000);
-    return () => clearInterval(interval);
+    }, 30000);
+
+    return () => {
+      unsubscribeWs();
+      clearInterval(fallbackInterval);
+    };
   }, []);
+
+  // Keep wallet asset USD valuations synchronized with live Binance Spot prices
+  useEffect(() => {
+    if (markets.length === 0) return;
+    setWalletAssets((prev) =>
+      prev.map((asset) => {
+        if (asset.symbol === 'USDT') return { ...asset, usdRate: 1 };
+        const liveMarket = markets.find((m) => m.symbol === asset.symbol);
+        if (liveMarket && liveMarket.price > 0 && liveMarket.price !== asset.usdRate) {
+          return { ...asset, usdRate: liveMarket.price };
+        }
+        return asset;
+      })
+    );
+  }, [markets]);
 
   // Mining simulated progress loop
   useEffect(() => {
@@ -478,6 +581,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         })
       );
 
+      const todayUTC = DailyRewardsFirestoreService.getTodayUTCDate();
       const demoTx: Transaction = {
         id: 'tx-demo-' + Date.now().toString().slice(-5),
         type: 'TASK_REWARD',
@@ -487,6 +591,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fee: 0,
         status: 'COMPLETED',
         timestamp: new Date().toISOString(),
+        claimDate: todayUTC,
+        rewardDay: todayUTC,
+        streakDay: day,
+        rewardSource: 'DAILY_STREAK',
         note: `[DEMO] Daily Streak Day ${day} Check-in Bonus`,
         isDemo: true,
       };
@@ -510,6 +618,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
+    // Prevent duplicate task reward submission if a pending/completed claim for this taskId already exists
+    const existingTaskTx = transactions.find(
+      (t) =>
+        t.type === 'TASK_REWARD' &&
+        t.taskId === task.id &&
+        (t.status === 'PENDING_REVIEW' || t.status === 'PENDING_CONFIRMATION' || t.status === 'COMPLETED')
+    );
+    if (existingTaskTx) {
+      addToast('Already Submitted', `A claim for "${task.title}" has already been submitted (${existingTaskTx.status}).`, 'info');
+      return;
+    }
+
     setEarnTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, status: 'CLAIMED' } : t))
     );
@@ -522,23 +642,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (!user.isDemo) {
       try {
-        const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        if (db) {
-          const txDocRef = doc(db, 'users', user.id, 'transactions', txId);
-          await setDoc(txDocRef, {
-            id: txId,
-            userId: user.id,
-            type: 'TASK_REWARD',
-            asset: task.rewardAsset,
-            amount: task.rewardUSD,
-            amountUSD: task.rewardUSD,
-            fee: 0,
-            status: 'PENDING_REVIEW',
-            timestamp: new Date().toISOString(),
-            note: `Task Bounty: ${task.title} (Pending Verification)`,
-            createdAt: serverTimestamp(),
-          });
-        }
+        await DailyRewardsFirestoreService.claimTaskReward(user.id, task.id);
         addToast(
           'Bounty Submitted',
           `Bounty for "${task.title}" saved in Firestore as PENDING_REVIEW. Client balance crediting is blocked; requires trusted verification.`,
@@ -556,7 +660,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             'info'
           );
         } else {
-          console.error('Error submitting task reward request:', err);
+          console.warn('Error submitting task reward request:', err);
           addToast('Bounty Request Notice', err?.message || 'Could not record bounty request in Firestore.', 'error');
         }
       }
@@ -570,6 +674,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return asset;
         })
       );
+      const demoTaskTx: Transaction = {
+        id: 'tx-demo-' + Date.now().toString().slice(-5),
+        type: 'TASK_REWARD',
+        asset: task.rewardAsset,
+        amount: task.rewardUSD,
+        amountUSD: task.rewardUSD,
+        fee: 0,
+        status: 'COMPLETED',
+        timestamp: new Date().toISOString(),
+        claimDate: DailyRewardsFirestoreService.getTodayUTCDate(),
+        taskId: task.id,
+        rewardSource: 'TASK_BOUNTY',
+        note: `[DEMO] Task Bounty: ${task.title}`,
+        isDemo: true,
+      };
+      setTransactions((prev) => [demoTaskTx, ...prev]);
       addToast('Bounty Claimed!', `[DEMO] +$${task.rewardUSD.toFixed(2)} ${task.rewardAsset} credited in sandbox wallet.`, 'success');
     }
   };
@@ -694,21 +814,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           usdRate: asset.usdRate,
         });
 
-        // Client cannot modify wallet balances directly.
-        // Balances are read-only and debited by trusted backend (e.g., Firebase Cloud Functions / Admin SDK)
         setTransactions((prev) => {
           if (prev.some((t) => t.id === newTx.id)) return prev;
           return [newTx, ...prev];
         });
 
+        const netAmount = Number((amount - asset.withdrawFee).toFixed(6));
         addToast(
           'Withdrawal Request Queued',
-          `Withdrawal request for ${amount} ${assetSymbol} recorded in Firestore as PENDING_REVIEW. Client balance modifications are blocked; requests remain pending.`,
+          newTx.reservedFromBalance
+            ? `Withdrawal of ${amount} ${assetSymbol} (${netAmount} ${assetSymbol} net after ${asset.withdrawFee} ${assetSymbol} fee) reserved in escrow as PENDING_REVIEW.`
+            : `Withdrawal request for ${amount} ${assetSymbol} (${netAmount} ${assetSymbol} net) saved in Firestore as PENDING_REVIEW.`,
           'warning'
         );
         return {
           success: true,
-          message: 'Withdrawal request saved in Firestore. Client balance modifications are blocked for security.',
+          message: newTx.reservedFromBalance
+            ? `Withdrawal reserved in escrow (${netAmount} ${assetSymbol} net payout).`
+            : 'Withdrawal request saved in Firestore as PENDING_REVIEW.',
         };
       } catch (err: any) {
         const errorMsg = err?.message || 'Failed to submit withdrawal request to Cloud Firestore.';
@@ -854,6 +977,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
   };
 
+  const refreshWalletState = async () => {
+    if (!user || user.isDemo) return;
+    try {
+      const [balances, streak] = await Promise.all([
+        WalletFirestoreService.fetchUserWallet(user.id).catch(() => null),
+        DailyRewardsFirestoreService.fetchDailyStreak(user.id).catch(() => null),
+      ]);
+      if (balances) {
+        setWalletAssets((prev) =>
+          prev.map((asset) => {
+            const rec = balances[asset.symbol];
+            return rec
+              ? { ...asset, balance: rec.balance, lockedBalance: rec.lockedBalance }
+              : { ...asset, balance: 0, lockedBalance: 0 };
+          })
+        );
+      }
+      if (streak) {
+        setDailyStreakRecord(streak);
+        setDailyRewards(DailyRewardsFirestoreService.computeDailyRewardsState(streak));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const toggleMobileFrame = () => {
     setIsMobileDeviceFrame((prev) => !prev);
   };
@@ -869,6 +1018,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setAccentTheme,
         markets,
         isMarketsLive,
+        marketConnectionStatus,
+        marketError,
         lastMarketUpdate,
         refreshMarkets,
         miningSession,
@@ -883,6 +1034,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         claimTaskReward,
         submitDepositRequest,
         submitWithdrawalRequest,
+        refreshWalletState,
         submitPlanOrder,
         toasts,
         addToast,

@@ -74,6 +74,55 @@ export const CoinIcon: React.FC<CoinIconProps> = ({
       label: 'Kaspa',
       badgeText: 'K',
     },
+    BNB: {
+      gradient: 'from-yellow-400 via-amber-500 to-orange-500',
+      shadow: 'shadow-yellow-500/15',
+      textClass: 'text-yellow-400 font-black',
+      label: 'BNB',
+      badgeText: 'BNB',
+    },
+    XRP: {
+      gradient: 'from-slate-300 via-blue-400 to-cyan-500',
+      shadow: 'shadow-cyan-500/15',
+      textClass: 'text-cyan-400 font-black',
+      label: 'XRP',
+      badgeText: '✕',
+    },
+    ADA: {
+      gradient: 'from-blue-400 via-indigo-500 to-cyan-500',
+      shadow: 'shadow-blue-500/15',
+      textClass: 'text-blue-400 font-black',
+      label: 'Cardano',
+      badgeText: '₳',
+    },
+    AVAX: {
+      gradient: 'from-rose-500 via-red-500 to-orange-500',
+      shadow: 'shadow-red-500/15',
+      textClass: 'text-rose-400 font-black',
+      label: 'Avalanche',
+      badgeText: '▲',
+    },
+    LINK: {
+      gradient: 'from-blue-500 via-indigo-500 to-sky-500',
+      shadow: 'shadow-indigo-500/15',
+      textClass: 'text-blue-400 font-black',
+      label: 'Chainlink',
+      badgeText: '⬡',
+    },
+    TRX: {
+      gradient: 'from-red-500 via-rose-500 to-pink-600',
+      shadow: 'shadow-rose-500/15',
+      textClass: 'text-red-400 font-black',
+      label: 'TRON',
+      badgeText: 'T',
+    },
+    ETC: {
+      gradient: 'from-emerald-400 via-green-500 to-teal-600',
+      shadow: 'shadow-emerald-500/15',
+      textClass: 'text-emerald-400 font-black',
+      label: 'Ethereum Classic',
+      badgeText: 'ξ',
+    },
   };
 
   const config = coinConfigs[upper] || {

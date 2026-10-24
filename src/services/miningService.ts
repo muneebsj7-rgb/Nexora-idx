@@ -1,6 +1,7 @@
 import {
   doc,
   getDoc,
+  getDocFromCache,
   setDoc,
   onSnapshot,
   serverTimestamp,
@@ -242,9 +243,14 @@ export class MiningFirestoreService {
    */
   static async fetchUserMiningSession(uid: string): Promise<MiningSession | null> {
     if (!db) return null;
+    const sessionDocRef = doc(db, 'users', uid, 'mining', 'session');
     try {
-      const sessionDocRef = doc(db, 'users', uid, 'mining', 'session');
-      const snap = await getDoc(sessionDocRef);
+      let snap;
+      try {
+        snap = await getDoc(sessionDocRef);
+      } catch (err) {
+        snap = await getDocFromCache(sessionDocRef);
+      }
       if (!snap.exists()) return null;
       const data = snap.data();
       const validAlgorithms = ['SHA-256 (BTC)', 'Ethash (ETC)', 'Scrypt (LTC/DOGE)'] as const;
@@ -279,7 +285,7 @@ export class MiningFirestoreService {
         isSimulated: true,
       };
     } catch (error) {
-      console.error(`Error reading users/${uid}/mining/session:`, error);
+      console.warn(`Firestore mining session read notice for users/${uid}/mining/session:`, error);
       throw formatMiningError(error, 'fetching mining session');
     }
   }
@@ -331,7 +337,7 @@ export class MiningFirestoreService {
         updatedAt: nowIso,
       };
     } catch (error) {
-      console.error(`Error updating users/${uid}/mining/session:`, error);
+      console.warn(`Error updating users/${uid}/mining/session:`, error);
       throw formatMiningError(error, 'toggling mining session');
     }
   }
@@ -374,7 +380,7 @@ export class MiningFirestoreService {
         { merge: true }
       );
     } catch (error) {
-      console.error(`Error updating hardware profile for users/${uid}/mining/session:`, error);
+      console.warn(`Error updating hardware profile for users/${uid}/mining/session:`, error);
       throw formatMiningError(error, 'updating hardware profile');
     }
   }

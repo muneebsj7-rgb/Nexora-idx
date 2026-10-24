@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx tests/settlementEngine.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -20,6 +21,7 @@
     "express": "^4.21.2",
     "firebase": "^12.19.0",
     "firebase-admin": "^14.5.0",
+    "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",

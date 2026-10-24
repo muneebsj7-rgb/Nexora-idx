@@ -1,6 +1,7 @@
 import {
   doc,
   getDoc,
+  getDocFromCache,
   setDoc,
   writeBatch,
   onSnapshot,
@@ -122,12 +123,20 @@ export class DailyRewardsFirestoreService {
   }
 
   /**
+   * Validates that a string is a strict UTC calendar date in YYYY-MM-DD format.
+   */
+  static isValidUtcDateString(val: unknown): val is string {
+    return typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim());
+  }
+
+  /**
    * Computes the 7-day reward display array based on the user's saved Firestore streak record.
    */
   static computeDailyRewardsState(streakRecord: DailyStreakRecord | null): DailyReward[] {
     const todayUTC = this.getTodayUTCDate();
     const hasClaimedToday = streakRecord?.lastClaimDate === todayUTC;
     const currentStreak = streakRecord?.currentStreak || 0;
+    const history = streakRecord?.claimHistory || [];
 
     return [1, 2, 3, 4, 5, 6, 7].map((day) => {
       const rewardUSD = DAILY_REWARD_RATES[day] || 1.00;
@@ -148,11 +157,25 @@ export class DailyRewardsFirestoreService {
         }
       }
 
-      const status: DailyReward['status'] = isClaimed
-        ? 'PENDING_VERIFICATION'
-        : isToday
-        ? 'CLAIMED' // eligible
-        : 'LOCKED';
+      // Determine latest verification status for this day from claimHistory or streakRecord
+      const latestItemForDay = [...history].reverse().find((h) => h.day === day);
+      let status: DailyReward['status'] = 'LOCKED';
+
+      if (isClaimed) {
+        if (latestItemForDay?.status === 'CLAIMED') {
+          status = 'CLAIMED';
+        } else if (latestItemForDay?.status === 'REJECTED') {
+          status = 'REJECTED';
+        } else if (day === currentStreak && streakRecord?.claimStatus === 'CLAIMED') {
+          status = 'CLAIMED';
+        } else if (day === currentStreak && streakRecord?.claimStatus === 'REJECTED') {
+          status = 'REJECTED';
+        } else {
+          status = 'PENDING_VERIFICATION';
+        }
+      } else if (isToday) {
+        status = 'CLAIMED'; // eligible to claim today
+      }
 
       return {
         day,
@@ -192,8 +215,16 @@ export class DailyRewardsFirestoreService {
             currentStreak: typeof data.currentStreak === 'number' ? data.currentStreak : 0,
             lastClaimDate: data.lastClaimDate || '',
             lastClaimTimestamp: data.lastClaimTimestamp || '',
+            lastClaimTxId: typeof data.lastClaimTxId === 'string' ? data.lastClaimTxId : undefined,
             totalClaims: typeof data.totalClaims === 'number' ? data.totalClaims : 0,
             claimStatus: data.claimStatus || 'PENDING_VERIFICATION',
+            approvalStatus: data.approvalStatus,
+            approvedAmount: typeof data.approvedAmount === 'number' ? data.approvedAmount : undefined,
+            verifiedBy: data.verifiedBy,
+            verifiedAt: data.verifiedAt && typeof data.verifiedAt.toDate === 'function'
+              ? data.verifiedAt.toDate().toISOString()
+              : data.verifiedAt ? String(data.verifiedAt) : undefined,
+            walletCredited: Boolean(data.walletCredited),
             claimHistory: Array.isArray(data.claimHistory) ? data.claimHistory : [],
             updatedAt: data.updatedAt && typeof data.updatedAt.toDate === 'function'
               ? data.updatedAt.toDate().toISOString()
@@ -218,9 +249,14 @@ export class DailyRewardsFirestoreService {
    */
   static async fetchDailyStreak(uid: string): Promise<DailyStreakRecord | null> {
     if (!db) return null;
+    const streakDocRef = doc(db, 'users', uid, 'rewards', 'dailyStreak');
     try {
-      const streakDocRef = doc(db, 'users', uid, 'rewards', 'dailyStreak');
-      const snap = await getDoc(streakDocRef);
+      let snap;
+      try {
+        snap = await getDoc(streakDocRef);
+      } catch {
+        snap = await getDocFromCache(streakDocRef);
+      }
       if (!snap.exists()) return null;
       const data = snap.data();
       return {
@@ -228,12 +264,17 @@ export class DailyRewardsFirestoreService {
         currentStreak: typeof data.currentStreak === 'number' ? data.currentStreak : 0,
         lastClaimDate: data.lastClaimDate || '',
         lastClaimTimestamp: data.lastClaimTimestamp || '',
+        lastClaimTxId: typeof data.lastClaimTxId === 'string' ? data.lastClaimTxId : undefined,
         totalClaims: typeof data.totalClaims === 'number' ? data.totalClaims : 0,
         claimStatus: data.claimStatus || 'PENDING_VERIFICATION',
+        approvalStatus: data.approvalStatus,
+        approvedAmount: typeof data.approvedAmount === 'number' ? data.approvedAmount : undefined,
+        verifiedBy: data.verifiedBy,
+        walletCredited: Boolean(data.walletCredited),
         claimHistory: Array.isArray(data.claimHistory) ? data.claimHistory : [],
       };
     } catch (error) {
-      console.error(`Error reading users/${uid}/rewards/dailyStreak:`, error);
+      console.warn(`Firestore daily streak read notice for users/${uid}/rewards/dailyStreak:`, error);
       throw formatRewardError(error, 'fetching daily streak');
     }
   }
@@ -244,12 +285,14 @@ export class DailyRewardsFirestoreService {
    * 1. Checks that today (UTC) has not already been claimed.
    * 2. Computes consecutive streak continuity.
    * 3. Writes users/{uid}/rewards/dailyStreak with status PENDING_VERIFICATION.
-   * 4. Queues a pending transaction in users/{uid}/transactions with status PENDING_REVIEW.
+   * 4. Queues a pending transaction in users/{uid}/transactions with status PENDING_REVIEW
+   *    and explicit `rewardDay` (UTC YYYY-MM-DD), `claimDate` (UTC YYYY-MM-DD), `streakDay` (1..7),
+   *    and `rewardSource: 'DAILY_STREAK'`.
    * 5. Does NOT directly credit wallet balances from the client.
    */
   static async claimDailyReward(
     uid: string,
-    day: number,
+    _day: number,
     currentStreakRecord: DailyStreakRecord | null
   ): Promise<{ streakRecord: DailyStreakRecord; txId: string; message: string }> {
     if (!db) {
@@ -257,6 +300,10 @@ export class DailyRewardsFirestoreService {
     }
 
     const todayUTC = this.getTodayUTCDate();
+    if (!this.isValidUtcDateString(todayUTC)) {
+      throw new Error(`Invalid UTC date generated for daily reward claim: '${todayUTC}'.`);
+    }
+
     const streakDocRef = doc(db, 'users', uid, 'rewards', 'dailyStreak');
 
     // 1. Fetch current server snapshot to verify actual existence and values
@@ -304,8 +351,14 @@ export class DailyRewardsFirestoreService {
       }
     }
 
-    const rewardUSD = DAILY_REWARD_RATES[nextStreak] || 1.00;
+    const rewardUSD = DAILY_REWARD_RATES[nextStreak];
+    if (!rewardUSD || rewardUSD <= 0) {
+      throw new Error(`Invalid official daily reward schedule for streak day ${nextStreak}.`);
+    }
+
     const nowIso = new Date().toISOString();
+    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const txDocRef = doc(db, 'users', uid, 'transactions', txId);
 
     const newClaimItem: DailyStreakClaimItem = {
       day: nextStreak,
@@ -313,6 +366,7 @@ export class DailyRewardsFirestoreService {
       rewardUSD,
       status: 'PENDING_VERIFICATION',
       timestamp: nowIso,
+      txId,
     };
 
     const nextTotalClaims = existingTotalClaims + 1;
@@ -323,14 +377,12 @@ export class DailyRewardsFirestoreService {
       currentStreak: nextStreak,
       lastClaimDate: todayUTC,
       lastClaimTimestamp: nowIso,
+      lastClaimTxId: txId,
       totalClaims: nextTotalClaims,
       claimStatus: 'PENDING_VERIFICATION',
       claimHistory: updatedHistory,
       updatedAt: nowIso,
     };
-
-    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const txDocRef = doc(db, 'users', uid, 'transactions', txId);
 
     // 4. Construct Firestore payload adhering strictly to allowlists
     const streakPayload: Record<string, any> = {
@@ -352,7 +404,7 @@ export class DailyRewardsFirestoreService {
       const batch = writeBatch(db);
       batch.set(streakDocRef, streakPayload, { merge: true });
 
-      // Queue pending reward transaction request (strict allowlist, status PENDING_REVIEW)
+      // Queue pending reward transaction request with validated UTC rewardDay and streakDay metadata
       batch.set(txDocRef, {
         id: txId,
         userId: uid,
@@ -363,6 +415,10 @@ export class DailyRewardsFirestoreService {
         fee: 0,
         status: 'PENDING_REVIEW',
         timestamp: nowIso,
+        claimDate: todayUTC,
+        rewardDay: todayUTC,
+        streakDay: nextStreak,
+        rewardSource: 'DAILY_STREAK',
         note: `Daily Check-in Day ${nextStreak} Bonus (Pending Verification)`,
         createdAt: serverTimestamp(),
       });
@@ -373,7 +429,7 @@ export class DailyRewardsFirestoreService {
       return {
         streakRecord: updatedStreakRecord,
         txId,
-        message: `Day ${nextStreak} check-in recorded. Status: PENDING_VERIFICATION. Client balance crediting is blocked; requires trusted backend verification.`,
+        message: `Day ${nextStreak} check-in recorded (UTC: ${todayUTC}). Status: PENDING_VERIFICATION. Client balance crediting is blocked; requires trusted backend verification.`,
       };
     } catch (writeError: any) {
       const isPermissionDenied =
@@ -394,8 +450,55 @@ export class DailyRewardsFirestoreService {
         };
       }
 
-      console.error(`Error claiming daily reward for users/${uid}:`, writeError);
+      console.warn(`Error claiming daily reward for users/${uid}:`, writeError);
       throw formatRewardError(writeError, 'submitting daily reward claim');
     }
+  }
+
+  /**
+   * Submits a task/bounty reward claim (`TASK_REWARD`) for an authenticated user.
+   * Validates `taskId` against `INITIAL_EARN_TASKS`, ensures official `rewardUSD` is used,
+   * and saves explicit `taskId` and `rewardSource: 'TASK_BOUNTY'` metadata.
+   */
+  static async claimTaskReward(
+    uid: string,
+    taskId: string
+  ): Promise<{ txId: string; task: EarnTask }> {
+    if (!db) {
+      throw new Error('Firestore is not configured. Cannot save task bounty request.');
+    }
+
+    const cleanTaskId = String(taskId || '').trim();
+    const officialTask = INITIAL_EARN_TASKS.find((t) => t.id === cleanTaskId);
+    if (!officialTask) {
+      throw new Error(`Unrecognized or invalid task bounty ID '${cleanTaskId}'.`);
+    }
+
+    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const nowIso = new Date().toISOString();
+    const todayUTC = this.getTodayUTCDate();
+    const txDocRef = doc(db, 'users', uid, 'transactions', txId);
+
+    await setDoc(txDocRef, {
+      id: txId,
+      userId: uid,
+      type: 'TASK_REWARD',
+      asset: 'USDT',
+      amount: officialTask.rewardUSD,
+      amountUSD: officialTask.rewardUSD,
+      fee: 0,
+      status: 'PENDING_REVIEW',
+      timestamp: nowIso,
+      claimDate: todayUTC,
+      taskId: officialTask.id,
+      rewardSource: 'TASK_BOUNTY',
+      note: `Task Bounty: ${officialTask.title} (Pending Verification)`,
+      createdAt: serverTimestamp(),
+    });
+
+    return {
+      txId,
+      task: officialTask,
+    };
   }
 }

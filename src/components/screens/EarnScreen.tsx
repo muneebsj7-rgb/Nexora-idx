@@ -108,11 +108,21 @@ export const EarnScreen: React.FC = () => {
           <div className="text-xs font-mono text-[#98A6BA]">
             {isRealUser ? (
               hasClaimedToday ? (
-                <span className="px-2.5 py-1 rounded-xl bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-                  Claimed for Today • Next Reset: 00:00 UTC
-                </span>
+                dailyStreakRecord?.claimStatus === 'CLAIMED' ? (
+                  <span className="px-2.5 py-1 rounded-xl bg-[#00D6A3]/15 text-[#00D6A3] border border-[#00D6A3]/30">
+                    Approved &amp; Credited Today • Next Reset: 00:00 UTC
+                  </span>
+                ) : dailyStreakRecord?.claimStatus === 'REJECTED' ? (
+                  <span className="px-2.5 py-1 rounded-xl bg-[#FF4D4D]/15 text-[#FF4D4D] border border-[#FF4D4D]/30">
+                    Claim Rejected Today • Next Reset: 00:00 UTC
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-1 rounded-xl bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                    Pending Verification • Next Reset: 00:00 UTC
+                  </span>
+                )
               ) : (
-                <span className="px-2.5 py-1 rounded-xl bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                <span className="px-2.5 py-1 rounded-xl bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
                   Ready to Claim Today (UTC: {todayUTC})
                 </span>
               )
@@ -126,6 +136,10 @@ export const EarnScreen: React.FC = () => {
         <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
           {dailyRewards.map((reward) => {
             const isClickable = reward.isToday && !reward.isClaimed && !claiming;
+            const isVerified = reward.isClaimed && (!isRealUser || reward.status === 'CLAIMED');
+            const isRejected = reward.isClaimed && isRealUser && reward.status === 'REJECTED';
+            const isPending = reward.isClaimed && isRealUser && reward.status === 'PENDING_VERIFICATION';
+
             return (
               <button
                 key={reward.day}
@@ -133,8 +147,12 @@ export const EarnScreen: React.FC = () => {
                 onClick={() => isClickable && handleClaim(reward.day)}
                 disabled={reward.isClaimed || !reward.isToday || claiming}
                 className={`p-3 rounded-2xl border text-center transition-all flex flex-col items-center justify-between min-h-[95px] relative ${
-                  reward.isClaimed
+                  isVerified
                     ? 'border-[#00D6A3]/30 bg-[#00D6A3]/10 text-[#00D6A3] opacity-90'
+                    : isRejected
+                    ? 'border-[#FF4D4D]/30 bg-[#FF4D4D]/10 text-[#FF4D4D] opacity-90'
+                    : isPending
+                    ? 'border-[#F3B64B]/30 bg-[#F3B64B]/10 text-[#F3B64B] opacity-95'
                     : reward.isToday
                     ? 'border-[#00D6A3] bg-[#00D6A3]/20 text-[#F4F7FC] shadow-lg shadow-[#00D6A3]/20 scale-105 cursor-pointer'
                     : 'border-[#253144] bg-[#0D121C]/60 text-[#98A6BA]/60 opacity-60 cursor-not-allowed'
@@ -146,9 +164,15 @@ export const EarnScreen: React.FC = () => {
                 </span>
                 <span className="text-[9px] font-semibold mt-1">
                   {reward.isClaimed ? (
-                    <span className="flex items-center gap-0.5 text-[#00D6A3]">
-                      <CheckCircle2 className="w-3 h-3" /> Done
-                    </span>
+                    isRejected ? (
+                      <span className="text-[#FF4D4D] font-bold">Rejected</span>
+                    ) : isPending ? (
+                      <span className="text-[#F3B64B] font-bold">Pending</span>
+                    ) : (
+                      <span className="flex items-center gap-0.5 text-[#00D6A3]">
+                        <CheckCircle2 className="w-3 h-3" /> Credited
+                      </span>
+                    )
                   ) : reward.isToday ? (
                     <span className="text-[#00D6A3] font-bold underline">
                       {claiming ? 'Saving...' : 'Claim'}
@@ -165,7 +189,7 @@ export const EarnScreen: React.FC = () => {
         {/* Verification and Security Notice */}
         <div className="mt-4 pt-3 border-t border-[#253144] text-[11px] text-[#98A6BA] flex items-center justify-between flex-wrap gap-2">
           <span>
-            <strong className="text-[#F4F7FC]">Security Policy:</strong> Check-in claims are recorded in Firestore as PENDING_VERIFICATION. Direct client balance credits are blocked by Firestore security rules; claims remain pending until trusted verification is implemented.
+            <strong className="text-[#F4F7FC]">Security Policy:</strong> Check-in claims are recorded in Firestore as PENDING_VERIFICATION and credit Available Balance once approved by an authorized administrator.
           </span>
           <span className="font-mono text-[#98A6BA] text-[10px]">
             UTC Calendar Integrity Enforced

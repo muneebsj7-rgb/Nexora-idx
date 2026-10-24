@@ -13,6 +13,7 @@ import {
 import {
   doc,
   getDoc,
+  getDocFromCache,
   setDoc,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -42,6 +43,18 @@ export const DEFAULT_DEMO_USER: UserProfile = {
   isDemo: true,
   authProvider: 'demo',
 };
+
+function isFirestoreOfflineError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = 'code' in error ? String((error as { code?: unknown }).code).toLowerCase() : '';
+  const msg = 'message' in error ? String((error as { message?: unknown }).message).toLowerCase() : '';
+  return (
+    code === 'unavailable' ||
+    msg.includes('client is offline') ||
+    msg.includes('offline') ||
+    msg.includes('could not reach cloud firestore backend')
+  );
+}
 
 function formatFirebaseError(error: unknown): Error {
   if (typeof error === 'object' && error !== null && 'code' in error) {
@@ -116,8 +129,8 @@ export class AuthService {
   /**
    * Ensures that the authenticated user has a real document in Cloud Firestore at users/{uid}.
    * If the document does not exist (e.g. initial registration or prior failure), creates it.
-   * If it already exists, returns the persisted profile and syncs email verification if updated.
-   * NEVER silently swallows Firestore errors.
+   * If Firestore is transiently offline, falls back to local Firestore cache or stored profile
+   * and queues synchronization when online.
    */
   static async ensureUserProfileDocument(
     fbUser: FirebaseUser,
@@ -140,8 +153,35 @@ export class AuthService {
     try {
       userDocSnap = await getDoc(userDocRef);
     } catch (readError) {
-      console.error(`Error reading Firestore document users/${fbUser.uid}:`, readError);
-      throw formatFirebaseError(readError);
+      if (isFirestoreOfflineError(readError)) {
+        try {
+          userDocSnap = await getDocFromCache(userDocRef);
+        } catch {
+          // Document not yet present in local IndexedDB cache while client is offline.
+          // Preserve any cached profile attributes for this uid or construct from FirebaseUser.
+          const cachedSession = this.currentUser?.id === fbUser.uid ? this.currentUser : null;
+          const offlineProfile: UserProfile = {
+            id: fbUser.uid,
+            email: fbUser.email || cachedSession?.email || '',
+            displayName: cachedSession?.displayName || cleanName,
+            isEmailVerified: fbUser.emailVerified || Boolean(cachedSession?.isEmailVerified),
+            kycTier: cachedSession?.kycTier || 'None',
+            createdAt: cachedSession?.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
+            avatarUrl: cachedSession?.avatarUrl || fbUser.photoURL || undefined,
+            referralCode: cachedSession?.referralCode || fallbackCode,
+            referredBy: extra?.referredBy?.trim() || cachedSession?.referredBy,
+            twoFactorEnabled: cachedSession?.twoFactorEnabled ?? false,
+            currency: cachedSession?.currency || 'USD',
+            accentTheme: cachedSession?.accentTheme || 'emerald',
+            isDemo: false,
+            authProvider: 'firebase',
+          };
+          return offlineProfile;
+        }
+      } else {
+        console.warn(`Firestore read notice for users/${fbUser.uid}:`, readError);
+        throw formatFirebaseError(readError);
+      }
     }
 
     if (!userDocSnap.exists()) {
@@ -181,7 +221,10 @@ export class AuthService {
         });
         return initialProfile;
       } catch (writeError) {
-        console.error(`Failed to create Firestore profile users/${fbUser.uid}:`, writeError);
+        if (isFirestoreOfflineError(writeError)) {
+          return initialProfile;
+        }
+        console.warn(`Failed to create Firestore profile users/${fbUser.uid}:`, writeError);
         throw formatFirebaseError(writeError);
       }
     }
@@ -457,7 +500,7 @@ export class AuthService {
       try {
         listener(user);
       } catch (err) {
-        console.error('Auth state listener error:', err);
+        console.warn('Auth state listener notice:', err);
       }
     });
   }
@@ -526,8 +569,10 @@ export class AuthService {
           { merge: true }
         );
       } catch (error) {
-        console.error('Firebase profile update error:', error);
-        throw formatFirebaseError(error);
+        if (!isFirestoreOfflineError(error)) {
+          console.warn('Firebase profile update notice:', error);
+          throw formatFirebaseError(error);
+        }
       }
     }
 

@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for Nexora Mine Phase 1–4 verification, admin security hardening (protecting setup-status behind admin authentication, stripping sensitive allowlist/credential metadata, removing demo-admin-token, deduplicating admin allowlists, enforcing verified admin identity), Firestore composite collection-group index configuration, and full validation reporting.",
-  "updatedAt":  "2026-10-24T13:58:04.119602451Z",
+  "summary":  "Implementation plan to replace simulated/polling market quotes and static sparklines with a real-time Binance Spot REST + WebSocket market terminal, interactive TradingView Lightweight Charts candlestick and volume histogram charts across 1m/5m/15m/1h/4h/1d/1w intervals, expanded 12-pair coverage, and strict zero-fabrication data policies.",
+  "updatedAt":  "2026-10-24T17:37:42.005199580Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

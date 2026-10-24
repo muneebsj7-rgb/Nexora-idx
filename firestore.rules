@@ -142,6 +142,8 @@ service cloud.firestore {
         allow create: if isOwner(userId)
           && isValidId(transactionId)
           && request.resource.data.userId == userId
+          && (!('id' in request.resource.data) || request.resource.data.id == transactionId)
+          && request.resource.data.asset in ['USDT', 'BTC', 'ETH', 'SOL', 'LTC']
           && request.resource.data.amount is number
           && request.resource.data.amount > 0
           && request.resource.data.type in ['DEPOSIT', 'WITHDRAWAL', 'TASK_REWARD']
@@ -150,7 +152,26 @@ service cloud.firestore {
             ||
             (request.resource.data.type == 'WITHDRAWAL' && request.resource.data.status == 'PENDING_REVIEW')
             ||
-            (request.resource.data.type == 'TASK_REWARD' && request.resource.data.status == 'PENDING_REVIEW')
+            (
+              request.resource.data.type == 'TASK_REWARD'
+              && request.resource.data.status == 'PENDING_REVIEW'
+              && request.resource.data.asset == 'USDT'
+              && (
+                (
+                  'rewardDay' in request.resource.data
+                  && (
+                    (request.resource.data.rewardDay is string && request.resource.data.rewardDay.matches('^\\d{4}-\\d{2}-\\d{2}$'))
+                    || (isNonNegativeInteger(request.resource.data.rewardDay) && request.resource.data.rewardDay >= 1 && request.resource.data.rewardDay <= 7)
+                  )
+                )
+                || (
+                  'taskId' in request.resource.data
+                  && request.resource.data.taskId is string
+                  && request.resource.data.taskId.size() > 0
+                  && request.resource.data.taskId.size() <= 64
+                )
+              )
+            )
           )
           && request.resource.data.keys().hasOnly([
             'id',
@@ -160,6 +181,7 @@ service cloud.firestore {
             'amount',
             'amountUSD',
             'fee',
+            'netPayoutAmount',
             'status',
             'timestamp',
             'network',
@@ -167,20 +189,49 @@ service cloud.firestore {
             'toAddress',
             'fromAddress',
             'note',
+            'claimDate',
+            'rewardDay',
+            'streakDay',
+            'taskId',
+            'rewardSource',
             'createdAt'
           ])
           && !request.resource.data.keys().hasAny([
             'approvedBy',
+            'approvedByUid',
             'approvedAt',
             'verifiedBy',
             'verifiedAt',
             'walletCredited',
+            'walletSettled',
+            'reservedFromBalance',
+            'refunded',
+            'refundedAt',
+            'settlementId',
+            'settlementStatus',
             'approvalStatus',
             'creditedAt',
-            'payoutTxHash'
+            'payoutTxHash',
+            'rejectedBy',
+            'rejectedByUid',
+            'rejectedAt',
+            'metadataBackfilledFrom'
           ]);
 
         allow update, delete: if false;
+      }
+
+      /**
+       * Settlements idempotency & audit subcollection: /users/{userId}/settlements/{settlementId}
+       *
+       * Financial Security Constraints:
+       * 1. Read: Authenticated owner can read only their own settlement audit records.
+       * 2. Write: Strictly FORBIDDEN from client SDK. Only the server-side Firebase Admin SDK
+       *    can create or update settlement records inside atomic transactions.
+       */
+      match /settlements/{settlementId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
       }
 
       /**

@@ -16,17 +16,35 @@ export interface UserProfile {
   isAdmin?: boolean;
 }
 
+export type MarketConnectionStatus = 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+
+export type KlineInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d' | '1w';
+
+export interface KlineCandle {
+  time: number; // UNIX timestamp in seconds (UTC)
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number; // Base asset volume
+  quoteVolume: number; // Quote asset (USDT) volume
+  isFinal?: boolean;
+}
+
 export interface CryptoMarket {
-  symbol: string;
-  pair: string;
+  symbol: string; // e.g., 'BTC'
+  pair: string; // e.g., 'BTCUSDT'
+  displayPair: string; // e.g., 'BTC/USDT'
   name: string;
   price: number;
-  change24h: number;
+  priceChange24h: number;
+  change24h: number; // percentage change 24h
   high24h: number;
   low24h: number;
-  volume24h: number;
-  marketCap?: number;
-  sparkline: number[];
+  volume24h: number; // 24h Quote Volume (USDT)
+  baseVolume24h: number; // 24h Base Asset Volume
+  lastUpdated: string;
+  tickDirection?: 'up' | 'down' | 'neutral';
   isPoW: boolean;
   algorithm?: string;
 }
@@ -98,9 +116,11 @@ export interface Transaction {
   amount: number;
   amountUSD: number;
   fee: number;
+  netPayoutAmount?: number;
   status: TransactionStatus;
   timestamp: string;
   txHash?: string;
+  payoutTxHash?: string;
   network?: string;
   toAddress?: string;
   fromAddress?: string;
@@ -108,14 +128,28 @@ export interface Transaction {
   userId?: string;
   isDemo?: boolean;
   approvedBy?: string;
+  approvedByUid?: string;
   approvedAt?: string;
   approvalNote?: string;
   creditedAmount?: number;
   creditedAsset?: string;
   walletCredited?: boolean;
+  walletSettled?: boolean;
+  reservedFromBalance?: boolean;
+  refunded?: boolean;
+  refundedAt?: string;
+  settlementId?: string;
+  settlementStatus?: 'CREDITED' | 'PAID' | 'REFUNDED' | 'REJECTED';
   rejectedBy?: string;
+  rejectedByUid?: string;
   rejectedAt?: string;
   rejectionReason?: string;
+  claimDate?: string;
+  rewardDay?: string | number;
+  streakDay?: number;
+  taskId?: string;
+  rewardSource?: 'DAILY_STREAK' | 'TASK_BOUNTY';
+  metadataBackfilledFrom?: string;
   updatedAt?: string;
 }
 
@@ -136,15 +170,16 @@ export interface DailyReward {
   isClaimed: boolean;
   isToday: boolean;
   claimedAt?: string;
-  status?: 'PENDING_VERIFICATION' | 'CLAIMED' | 'LOCKED' | 'SIMULATED';
+  status?: 'PENDING_VERIFICATION' | 'CLAIMED' | 'REJECTED' | 'LOCKED' | 'SIMULATED';
 }
 
 export interface DailyStreakClaimItem {
   day: number;
   date: string;
   rewardUSD: number;
-  status: 'PENDING_VERIFICATION' | 'CLAIMED' | 'SIMULATED';
+  status: 'PENDING_VERIFICATION' | 'CLAIMED' | 'REJECTED' | 'SIMULATED';
   timestamp: string;
+  txId?: string;
 }
 
 export interface DailyStreakRecord {
@@ -152,8 +187,14 @@ export interface DailyStreakRecord {
   currentStreak: number;
   lastClaimDate: string; // YYYY-MM-DD (UTC)
   lastClaimTimestamp: string;
+  lastClaimTxId?: string;
   totalClaims: number;
-  claimStatus: 'PENDING_VERIFICATION' | 'CLAIMED' | 'SIMULATED';
+  claimStatus: 'PENDING_VERIFICATION' | 'CLAIMED' | 'REJECTED' | 'SIMULATED';
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  approvedAmount?: number;
+  verifiedBy?: string;
+  verifiedAt?: string;
+  walletCredited?: boolean;
   claimHistory: DailyStreakClaimItem[];
   updatedAt?: string;
 }

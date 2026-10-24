@@ -26,16 +26,6 @@ import {
   CheckCircle2,
   Calendar
 } from 'lucide-react';
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  LineChart,
-  Line,
-  Tooltip,
-  XAxis,
-  YAxis
-} from 'recharts';
 import { Transaction } from '../../types';
 import { NotificationDrawer } from '../modals/NotificationDrawer';
 import { DepositModal } from '../modals/DepositModal';
@@ -43,6 +33,8 @@ import { WithdrawModal } from '../modals/WithdrawModal';
 import { PlanModal } from '../modals/PlanModal';
 import { GradientIcon } from '../ui/GradientIcon';
 import { CoinIcon } from '../ui/CoinIcon';
+import { CandlestickChart } from '../ui/CandlestickChart';
+import { formatCryptoPrice, formatCompactVolume } from '../../services/marketService';
 
 export const HomeScreen: React.FC = () => {
   const {
@@ -54,6 +46,8 @@ export const HomeScreen: React.FC = () => {
     transactions,
     markets,
     isMarketsLive,
+    marketConnectionStatus,
+    marketError,
     refreshMarkets,
     openAuthModal,
     addToast,
@@ -123,8 +117,8 @@ export const HomeScreen: React.FC = () => {
     }
   };
 
-  // Filter snapshot markets (BTC, ETH, SOL)
-  const snapshotMarkets = markets.filter((m) => ['BTC', 'ETH', 'SOL'].includes(m.symbol));
+  // Filter snapshot markets (BTC, ETH, BNB, SOL)
+  const snapshotMarkets = markets.filter((m) => ['BTC', 'ETH', 'BNB', 'SOL'].includes(m.symbol));
   const todayRewardItem = dailyRewards.find((r) => r.isToday);
   const isClaimedToday = dailyStreakRecord?.lastClaimDate === new Date().toISOString().slice(0, 10);
 
@@ -452,10 +446,16 @@ export const HomeScreen: React.FC = () => {
                 <div className="text-right">
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                     isClaimedToday
-                      ? 'bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30'
+                      ? dailyStreakRecord?.claimStatus === 'PENDING_VERIFICATION'
+                        ? 'bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30'
+                        : 'bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30'
                       : 'bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30'
                   }`}>
-                    {isClaimedToday ? 'Claimed Today' : 'Ready to Claim'}
+                    {isClaimedToday
+                      ? dailyStreakRecord?.claimStatus === 'PENDING_VERIFICATION'
+                        ? 'Pending Verification'
+                        : 'Approved & Credited'
+                      : 'Ready to Claim'}
                   </span>
                 </div>
               </div>
@@ -576,18 +576,36 @@ export const HomeScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* 5. LIVE MARKET SNAPSHOT */}
+      {/* 5. LIVE MARKET SNAPSHOT (Real-Time Binance Spot Tickers + Candlestick Chart) */}
       <div className="rounded-3xl p-5 border border-[#253144] bg-[#121925] shadow-xl">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider">
-              Live Market Snapshot
+              Binance Spot Market Snapshot
             </h2>
-            <span className={`inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full ${
-              isMarketsLive ? 'bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30' : 'bg-[#182232] text-[#98A6BA]'
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${isMarketsLive ? 'bg-[#00D6A3] animate-pulse' : 'bg-[#98A6BA]'}`} />
-              {isMarketsLive ? 'Live Feed' : 'Cached Feed'}
+            <span
+              className={`inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full ${
+                marketConnectionStatus === 'CONNECTED'
+                  ? 'bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30'
+                  : isMarketsLive
+                  ? 'bg-[#25B9F3]/10 text-[#25B9F3] border border-[#25B9F3]/30'
+                  : 'bg-[#FF647C]/10 text-[#FF647C] border border-[#FF647C]/30'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  marketConnectionStatus === 'CONNECTED'
+                    ? 'bg-[#00D6A3] animate-pulse'
+                    : isMarketsLive
+                    ? 'bg-[#25B9F3]'
+                    : 'bg-[#FF647C]'
+                }`}
+              />
+              {marketConnectionStatus === 'CONNECTED'
+                ? 'WS Live'
+                : isMarketsLive
+                ? 'REST Live'
+                : 'Reconnecting'}
             </span>
           </div>
 
@@ -603,24 +621,23 @@ export const HomeScreen: React.FC = () => {
               onClick={() => setActiveTab('markets')}
               className="text-xs font-semibold text-[#00D6A3] hover:underline flex items-center gap-0.5"
             >
-              <span>View All</span>
+              <span>Full Terminal</span>
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        {/* 3 Asset Selection Cards with Inline Sparklines */}
+        {/* 4 Asset Selection Cards with Real-Time Binance 24h Range & Volume */}
         {snapshotMarkets.length > 0 ? (
           <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {snapshotMarkets.map((coin) => {
                 const isPositive = coin.change24h >= 0;
                 const isSelected = selectedChartAsset === coin.symbol;
-                const sparklineData = coin.sparkline.map((val, i) => ({ price: val, idx: i }));
 
                 return (
                   <div
-                    key={coin.symbol}
+                    key={coin.pair}
                     onClick={() => setSelectedChartAsset(coin.symbol)}
                     className={`cursor-pointer p-3.5 rounded-2xl border transition-all flex items-center justify-between group ${
                       isSelected
@@ -631,33 +648,32 @@ export const HomeScreen: React.FC = () => {
                     <div className="flex items-center gap-2.5">
                       <CoinIcon symbol={coin.symbol} size="sm" glow={isSelected} />
                       <div>
-                        <div className="font-bold text-[#F4F7FC] text-xs">{coin.symbol}/USDT</div>
-                        <div className="text-[10px] text-[#98A6BA]">{coin.name}</div>
+                        <div className="font-bold text-[#F4F7FC] text-xs">{coin.displayPair}</div>
+                        <div className="text-[10px] text-[#98A6BA] font-mono">
+                          Vol {formatCompactVolume(coin.volume24h, '$')}
+                        </div>
                       </div>
-                    </div>
-
-                    {/* Inline Mini Sparkline */}
-                    <div className="w-16 h-8 flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={sparklineData}>
-                          <Line
-                            type="monotone"
-                            dataKey="price"
-                            stroke={isPositive ? '#19C784' : '#FF647C'}
-                            strokeWidth={1.8}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
                     </div>
 
                     <div className="text-right">
-                      <div className="font-mono font-bold text-xs text-[#F4F7FC]">
-                        ${coin.price.toLocaleString('en-US', { minimumFractionDigits: coin.price < 10 ? 4 : 2 })}
+                      <div
+                        className={`font-mono font-bold text-xs transition-colors ${
+                          coin.tickDirection === 'up'
+                            ? 'text-[#19C784]'
+                            : coin.tickDirection === 'down'
+                            ? 'text-[#FF647C]'
+                            : 'text-[#F4F7FC]'
+                        }`}
+                      >
+                        ${formatCryptoPrice(coin.price)}
                       </div>
-                      <div className={`text-[10px] font-mono font-semibold ${isPositive ? 'text-[#19C784]' : 'text-[#FF647C]'}`}>
-                        {isPositive ? '+' : ''}{coin.change24h.toFixed(2)}%
+                      <div
+                        className={`text-[10px] font-mono font-semibold ${
+                          isPositive ? 'text-[#19C784]' : 'text-[#FF647C]'
+                        }`}
+                      >
+                        {isPositive ? '+' : ''}
+                        {coin.change24h.toFixed(2)}%
                       </div>
                     </div>
                   </div>
@@ -665,99 +681,40 @@ export const HomeScreen: React.FC = () => {
               })}
             </div>
 
-            {/* 7-Day Historical Trend Line Chart */}
+            {/* Interactive Real-Time Candlestick Chart for Selected Snapshot Coin */}
             {(() => {
-              const activeCoin = snapshotMarkets.find((m) => m.symbol === selectedChartAsset) || snapshotMarkets[0];
+              const activeCoin =
+                snapshotMarkets.find((m) => m.symbol === selectedChartAsset) || snapshotMarkets[0];
               if (!activeCoin) return null;
 
-              const days = ['7d ago', '6d ago', '5d ago', '4d ago', '3d ago', 'Yesterday', 'Today'];
-              const chartData = activeCoin.sparkline.map((val, idx) => ({
-                day: days[idx] || `D${idx + 1}`,
-                price: val,
-                formatted: `$${val.toLocaleString('en-US', { minimumFractionDigits: val < 10 ? 4 : 2 })}`,
-              }));
-
-              const firstPrice = activeCoin.sparkline[0] || activeCoin.price;
-              const lastPrice = activeCoin.price;
-              const change7dPercent = Number((((lastPrice - firstPrice) / firstPrice) * 100).toFixed(2));
-              const is7dPositive = change7dPercent >= 0;
-              const high7d = Math.max(...activeCoin.sparkline);
-              const low7d = Math.min(...activeCoin.sparkline);
-              const strokeColor = is7dPositive ? '#19C784' : '#FF647C';
-              const gradientId = `gradient-${activeCoin.symbol}-dark`;
-
               return (
-                <div className="p-4 rounded-2xl bg-[#0D121C] border border-[#253144] space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#253144] pb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: strokeColor }} />
-                      <h3 className="text-xs font-bold text-[#F4F7FC]">
-                        {activeCoin.name} ({activeCoin.symbol}/USDT) • 7-Day Price Trend
-                      </h3>
-                      <span className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full ${
-                        is7dPositive
-                          ? 'bg-[#19C784]/15 text-[#19C784] border border-[#19C784]/30'
-                          : 'bg-[#FF647C]/15 text-[#FF647C] border border-[#FF647C]/30'
-                      }`}>
-                        {is7dPositive ? '+' : ''}{change7dPercent}% 7D
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-4 text-[11px] font-mono text-[#98A6BA]">
-                      <span>7D High: <strong className="text-[#F4F7FC]">${high7d.toLocaleString()}</strong></span>
-                      <span>7D Low: <strong className="text-[#F4F7FC]">${low7d.toLocaleString()}</strong></span>
-                    </div>
-                  </div>
-
-                  <div className="w-full h-32 pt-1">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor={strokeColor} stopOpacity={0.25} />
-                            <stop offset="95%" stopColor={strokeColor} stopOpacity={0.0} />
-                          </linearGradient>
-                        </defs>
-                        <XAxis
-                          dataKey="day"
-                          stroke="#98A6BA"
-                          fontSize={10}
-                          tickLine={false}
-                          axisLine={{ stroke: '#253144' }}
-                        />
-                        <YAxis domain={['auto', 'auto']} hide={true} />
-                        <Tooltip
-                          content={({ active, payload }) => {
-                            if (active && payload && payload.length) {
-                              const dataPoint = payload[0].payload;
-                              return (
-                                <div className="p-2.5 rounded-xl bg-[#121925] border border-[#253144] shadow-xl text-xs">
-                                  <p className="text-[10px] text-[#98A6BA] font-mono">{dataPoint.day}</p>
-                                  <p className="font-mono font-bold text-[#F4F7FC] mt-0.5">{dataPoint.formatted}</p>
-                                </div>
-                              );
-                            }
-                            return null;
-                          }}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="price"
-                          stroke={strokeColor}
-                          strokeWidth={2}
-                          fillOpacity={1}
-                          fill={`url(#${gradientId})`}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                <CandlestickChart
+                  pair={activeCoin.pair}
+                  symbol={activeCoin.symbol}
+                  defaultInterval="1h"
+                  height={280}
+                  compact={true}
+                  onExpandClick={() => setActiveTab('markets')}
+                />
               );
             })()}
           </div>
         ) : (
-          <div className="p-6 text-center text-xs text-[#98A6BA]">
-            Loading cryptocurrency market quotes...
+          <div className="p-6 text-center text-xs text-[#98A6BA] space-y-2">
+            <p>
+              {marketError
+                ? `Binance market feed error: ${marketError}`
+                : 'Connecting to Binance Spot market stream...'}
+            </p>
+            {marketError && (
+              <button
+                onClick={handleManualRefresh}
+                className="px-3 py-1.5 rounded-xl bg-[#00D6A3] text-[#080B12] font-bold text-xs inline-flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -824,9 +781,19 @@ export const HomeScreen: React.FC = () => {
                           ? 'bg-[#19C784]/15 text-[#19C784] border border-[#19C784]/30'
                           : tx.status === 'PENDING_CONFIRMATION' || tx.status === 'PENDING_REVIEW'
                           ? 'bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30'
+                          : tx.status === 'REJECTED' || tx.status === 'FAILED'
+                          ? 'bg-[#FF647C]/15 text-[#FF647C] border border-[#FF647C]/30'
                           : 'bg-[#182232] text-[#98A6BA] border border-[#253144]'
                       }`}>
-                        {tx.status.replace('_', ' ')}
+                        {tx.status === 'COMPLETED'
+                          ? tx.type === 'WITHDRAWAL'
+                            ? 'Paid & Settled'
+                            : 'Approved & Credited'
+                          : tx.status === 'REJECTED'
+                          ? tx.type === 'WITHDRAWAL' && tx.refunded
+                            ? 'Rejected • Refunded'
+                            : 'Rejected'
+                          : tx.status.replace('_', ' ')}
                       </span>
                     </div>
                   </div>

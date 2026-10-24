@@ -1,118 +1,60 @@
-# Nexora Mine — Admin Security Hardening, Firestore Index Configuration & Verification Plan
+# Real-Time Binance Spot Market & Candlestick Terminal Plan
 
-This plan covers verifying the existing nine bug fixes across the Nexora Mine cloud mining platform, hardening all administrative endpoints and authentication flows against information disclosure and unauthorized token bypasses, configuring the required Firestore composite collection-group index for pending deposit queries, and running full build and runtime validation.
+## 1. Objective & Data Integrity Policy
+Upgrade the cryptocurrency market system from 10-second polling with synthetic fallback data to a **real-time Binance Spot market terminal** powered by official public REST and WebSocket endpoints (`data-api.binance.vision` / `api.binance.com` and `wss://stream.binance.com:9443`).
 
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The following architectural and security decisions were confirmed during Phase 1 clarification and govern the execution of this plan:
-
-- **Confirmed Decision 1 — Admin Setup Status Endpoint Security**: The admin setup-status endpoint will be protected by the admin authentication middleware and scoped to return only minimal, non-sensitive boolean status flags (`isConfigured` and `functionsDeployed`), eliminating unauthenticated exposure of administrator email allowlists, project identifiers, and service-account credential presence.
-- **Confirmed Decision 2 — Removal of Demo Admin Token Bypass**: The `demo-admin-token` fallback will be completely removed from the server authentication middleware so that administrative endpoints exclusively accept cryptographically verified Firebase ID tokens belonging to verified administrators.
-- **Confirmed Decision 3 — Non-Destructive Local Index Configuration**: The composite collection-group index for pending deposits will be defined in the local Firestore index configuration and linked in the Firebase project configuration without deploying to production or altering live data.
+- **Strict Zero-Fabrication Policy**: Remove all synthetic prices, simulated random price jitter, and fabricated sparklines. Display only genuine exchange data returned by Binance Spot APIs. If the network or exchange stream is unreachable, display an explicit disconnected/error state and retry controls rather than inventing numbers.
 
 ---
 
-## 1. Overview & Core Concept
-
-- **What It Does**: Audits and verifies the nine previously applied bug fixes, locks down the administrative deposit settlement API against unauthenticated reconnaissance and token bypasses, defines the exact Firestore collection-group index required for cross-user pending deposit review, and validates the complete TypeScript and Cloud Functions build pipeline.
-- **Target Audience / Persona**: Platform administrators reviewing pending cryptocurrency deposit requests and miners using the simulated cloud mining dashboard, multi-chain custodial wallet, market tickers, and daily reward center.
-- **Key Value**: Enforces zero-trust backend administrative authorization, prevents leakage of privileged administrator identities or server environment metadata, ensures cross-account deposit queries are backed by a valid composite index definition, and provides evidence-based verification of every build and runtime check.
-
----
-
-## 2. User Experience & Visual Design
-
-- **Key User Flows**:
-  1. **Logged-Out & Authenticated Navigation**: Visitors start on a clean zero-balance dashboard; signing in, registering, entering Sandbox Demo Mode, or signing out reliably routes the user to the Home dashboard while gating protected actions behind authentication.
-  2. **Admin Deposit Verification Desk**: When an authenticated user with a verified administrator email opens the Wallet view, the Admin Deposit Verification & Settlement Desk loads pending deposit requests using the user's Firebase ID token and displays sanitized server readiness status without exposing raw email allowlists or service-account environment internals.
-  3. **Custodial Wallet & Modals**: Users inspect available vs. locked balances (computed without double-subtraction), open Deposit, Withdrawal, and Hashrate Contract modals that synchronize with the selected asset or plan, and inspect formatted timestamps in transaction receipts.
-- **Visual Identity & Theme**:
-  - *Aesthetic Direction*: High-contrast dark fintech and cloud-mining telemetry console with clean hairline borders and structured tabular data grids.
-  - *Color Palette & Mood*: Deep obsidian canvas (`#080B12`, `--background`), elevated slate cards (`#121925`, `--card`), subtle structural borders (`#253144`, `--border`), emerald matrix primary accent (`#00D6A3`, `--primary`), cyan secondary accent (`#25B9F3`, `--accent`), and semantic status indicators (`#19C784` nominal, `#F3B64B` warning/pending, `#FF4D4D` error/rejected).
-  - *Typography & Hierarchy*: `Plus Jakarta Sans` for crisp UI headings and navigation paired with `JetBrains Mono` (`tabular-nums`) for all cryptocurrency balances, hash rates, USD valuations, and transaction identifiers.
-  - *Component Styling & Layout*: Responsive mobile-first and desktop container layout with single-elevation cards, segmented transaction filter controls, and accessible modal dialogs.
-- **Interactive Feedback & Motion**: Smooth 200ms state transitions, spinning refresh indicators on queue and market sync actions, and contextual toast notifications for deposit approvals, rejections, and validation errors.
+## 2. Trading Pair Coverage (12 Binance Spot USDT Pairs)
+Expand the market catalog to the top 12 Binance Spot USDT pairs with full metadata and icon configurations:
+- `BTCUSDT` (Bitcoin) — PoW (SHA-256)
+- `ETHUSDT` (Ethereum) — PoS
+- `BNBUSDT` (BNB) — PoSA
+- `SOLUSDT` (Solana) — PoH / PoS
+- `XRPUSDT` (XRP) — RPCA
+- `DOGEUSDT` (Dogecoin) — PoW (Scrypt)
+- `ADAUSDT` (Cardano) — PoS (Ouroboros)
+- `AVAXUSDT` (Avalanche) — PoS (Snowman)
+- `LINKUSDT` (Chainlink) — Oracle / PoS
+- `TRXUSDT` (TRON) — DPoS
+- `LTCUSDT` (Litecoin) — PoW (Scrypt)
+- `ETCUSDT` (Ethereum Classic) — PoW (Etchash)
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+## 3. Architecture & Technical Design
 
-- **Decision 1: Strict Token-Only Admin Authorization & Setup Status Redaction**
-  - *Chosen Approach*: Require verified Firebase ID token authentication on `/api/admin/setup-status`, pass the caller's Bearer token from the frontend admin service, deduplicate the server's administrator email list, require `email_verified === true` on all email-based admin checks, and return only `{ isConfigured, functionsDeployed, notes }` without `adminEmails`, `projectId`, or `hasServiceAccount`.
-  - *Why*: Eliminates unauthenticated reconnaissance of administrator email addresses and server credential state while preserving the Admin Desk's ability to display whether backend settlement is ready.
-  - *Alternatives Considered*: Keeping `/api/admin/setup-status` public with redacted fields was passed over in favor of requiring admin authentication as confirmed by the user.
-- **Decision 2: Complete Removal of `demo-admin-token`**
-  - *Chosen Approach*: Delete the `demo-admin-token` branch from `requireAdminAuth` so no static bearer string can ever grant administrative privileges regardless of `NODE_ENV` configuration.
-  - *Why*: Guarantees that a missing or misconfigured `NODE_ENV` variable in any deployment environment can never expose administrative deposit approval or rejection routes.
-  - *Alternatives Considered*: Gating the token behind a secondary environment flag was passed over because real admin actions require real Firestore credentials and a verified Firebase identity.
-- **Decision 3: Collection-Group Composite Index Definition**
-  - *Chosen Approach*: Define a `COLLECTION_GROUP` index on `transactions` for `type` (`ASCENDING`) and `status` (`ASCENDING`) and link it in the Firebase configuration file.
-  - *Why*: The pending-deposits endpoint executes `.collectionGroup('transactions').where('type', '==', 'DEPOSIT').where('status', '==', 'PENDING_CONFIRMATION').limit(50)`, which requires a two-field ascending composite collection-group index in Cloud Firestore.
+### A. Market Data & WebSocket Service (`src/services/marketService.ts`)
+1. **24hr Ticker Snapshot (REST)**:
+   - Fetch initial 24hr ticker statistics for all 12 symbols from `https://data-api.binance.vision/api/v3/ticker/24hr` (with automatic failover to `https://api.binance.com/api/v3/ticker/24hr`).
+   - Map real fields: `lastPrice`, `priceChange`, `priceChangePercent`, `highPrice`, `lowPrice`, `volume` (base asset volume), `quoteVolume` (USDT 24h volume), and `CloseTime`.
+2. **Real-Time Multi-Stream Ticker WebSocket**:
+   - Connect to `wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker/...` for all 12 pairs.
+   - Process `24hrTicker` events in real time to update spot price, 24h change, 24h high/low, and 24h volume with flash direction indicators (up/down price tick state).
+   - Automatic exponential-backoff reconnection and connection status tracking (`CONNECTING` | `CONNECTED` | `DISCONNECTED` | `ERROR`).
+3. **Historical OHLCV Klines (REST) & Live Kline Stream (WebSocket)**:
+   - Support timeframes: `1m`, `5m`, `15m`, `1h` (default), `4h`, `1d`, `1w`.
+   - Fetch historical candles (`limit=200`) from `/api/v3/klines?symbol=<PAIR>&interval=<INTERVAL>&limit=200`.
+   - Subscribe to `wss://stream.binance.com:9443/ws/<symbol_lower>@kline_<interval>` for the active symbol and timeframe so the latest candle and volume bar update live tick-by-tick and roll over seamlessly when a new candle opens.
 
----
+### B. Interactive Candlestick & Volume Chart Component (`src/components/ui/CandlestickChart.tsx`)
+- Install and integrate `lightweight-charts` for high-performance HTML5 Canvas financial charting.
+- Render:
+  - **Candlestick Series**: Up candles in `#19C784`, down candles in `#FF647C`, matching wicks and borders.
+  - **Volume Histogram Series**: Overlaid at the bottom 20% of the chart pane with semi-transparent green/red bars corresponding to candle direction.
+  - **Interactive Crosshair Legend**: Live readout of hovered candle's timestamp, Open, High, Low, Close (`O / H / L / C`), net change, and Volume.
+  - **Timeframe Selector Bar**: Instant switching between `1m`, `5m`, `15m`, `1h`, `4h`, `1d`, and `1w` with loading skeleton and error/retry state.
+  - **Zoom / Pan / Reset View Controls**: Touch and mouse drag-to-pan, scroll/pinch-to-zoom, and a one-click "Reset Chart" button.
 
-## 4. Technical Architecture & Data Strategy *(Technical Reference)*
+### C. Markets Screen Upgrade (`src/components/screens/MarketsScreen.tsx`)
+- **Live Connection Status Badge**: Real-time WebSocket status pill (`Live WebSocket`, `Connecting...`, or `Stream Offline` with reconnect action).
+- **Inline Interactive Market Terminal Panel**:
+  - Positioned above the Markets table, displaying the active pair's header stats (Last Price with real-time tick color flash, 24h Change %, 24h High, 24h Low, 24h Volume in Base & USDT) alongside the interactive `CandlestickChart` (`1h` default).
+  - Clicking any row in the Markets table selects that pair in the inline terminal, or opens the expandable full-detail modal via a dedicated expand/detail action.
+- **Expandable Coin Detail Modal**:
+  - Full-featured modal view with an expanded interactive candlestick + volume chart, timeframe switcher, complete 24h exchange statistics, and quick links to Mining and Wallet.
 
-- **Architecture & Component Diagram**:
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                         Client Application (React)                        │
-│                                                                           │
-│  ┌──────────────────────┐   ┌──────────────────────┐   ┌───────────────┐  │
-│  │   AppContext State   │──▶│  Home / Mining /     │──▶│ Deposit /     │  │
-│  │  (Auth, Wallet, Tx)  │   │  Earn / Markets UI   │   │ Withdraw /    │  │
-│  └──────────┬───────────┘   └──────────────────────┘   │ Plan Modals   │  │
-│             │                                          └───────────────┘  │
-│             ▼                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │            WalletScreen — Admin Deposit Settlement Desk             │  │
-│  │       (Attaches Firebase ID Token via AdminService Client)          │  │
-│  └──────────────────────────────────┬──────────────────────────────────┘  │
-└─────────────────────────────────────┼─────────────────────────────────────┘
-                                      │ Bearer <Firebase ID Token>
-                                      ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                     Express Backend & Admin API                           │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                    requireAdminAuth Middleware                      │  │
-│  │  • Verifies Firebase ID Token (Admin SDK / Identity Toolkit REST)   │  │
-│  │  • Enforces custom claim admin===true OR (allowlist + verified)     │  │
-│  │  • Deduplicated ADMIN_EMAILS • Zero demo-admin-token bypass         │  │
-│  └──────────┬───────────────────────┬──────────────────────────┬───────┘  │
-│             │                       │                          │          │
-│             ▼                       ▼                          ▼          │
-│  ┌────────────────────┐  ┌──────────────────────┐  ┌───────────────────┐  │
-│  │ GET /setup-status  │  │ GET /pending-deposits│  │ POST /approve &   │  │
-│  │ (Redacted Status)  │  │ (CollectionGroup Qry)│  │      /reject      │  │
-│  └────────────────────┘  └──────────┬───────────┘  └─────────┬─────────┘  │
-└─────────────────────────────────────┼────────────────────────┼────────────┘
-                                      │                        │
-                                      ▼                        ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                   Cloud Firestore & Index Configuration                   │
-│                                                                           │
-│  • Collection Group Index: transactions (type ASC, status ASC)            │
-│  • Atomic Transaction: users/{uid}/wallet/{symbol} & transactions/{txId}  │
-│  • Client Security Rules: /wallet/{symbol} allow write: if false          │
-└───────────────────────────────────────────────────────────────────────────┘
-```
-
-- **Data Model & State**:
-  - **AdminSetupStatus**: Scoped interface containing `isConfigured: boolean`, `functionsDeployed: boolean`, and `notes: string[]` (no sensitive email arrays, project IDs, or credential flags).
-  - **UserProfile**: Client-side `isAdmin` is stripped during profile updates so users cannot self-assign administrative status in local state or Firestore documents.
-  - **Firestore Composite Index**: Collection group `transactions` indexed on `type` (`ASCENDING`) + `status` (`ASCENDING`) with `COLLECTION_GROUP` query scope.
-- **Interactive Component & State Mapping**:
-  - **Phase 1 Verification**: Confirm all nine previous fixes in source code (login/logout navigation to Home, logged-out vs. Demo separation, modal prop synchronization, portfolio USD math, 2FA & fee withdrawal validation, Earn task navigation, Firestore timestamp formatting, mining session rule fields, and Cloud Functions v1 compilation), check workspace/Git state, and remove the stray lockfile if present.
-  - **Phase 2 Admin Hardening**:
-    - Deduplicate `ADMIN_EMAILS` using a normalized `Set` in both the server and Cloud Functions.
-    - Enforce `isEmailVerified` alongside custom claims or allowlisted emails in `requireAdminAuth`, and remove the `demo-admin-token` block completely.
-    - Protect `GET /api/admin/setup-status` with `requireAdminAuth` and return only minimal safe boolean fields (`isConfigured`, `functionsDeployed`, `notes`).
-    - Update the client admin service to send the authenticated user's Bearer token when requesting `/api/admin/setup-status` and update the Wallet Admin Desk setup panel to render the sanitized status fields cleanly.
-    - Ensure `isAdmin` is excluded from client-writable profile updates in the authentication service.
-  - **Phase 3 Firestore Index Configuration**:
-    - Create the Firestore composite collection-group index configuration for `transactions` (`type` ASC, `status` ASC) and link `"indexes": "firestore.indexes.json"` in the Firebase configuration file.
-  - **Phase 4 Validation & Reporting**:
-    - Execute root TypeScript check (`npm run lint`), production build (`npm run build`), Cloud Functions build (`npm --prefix functions run build`), and runtime HTTP verification of admin endpoints, then present the complete evidence-based report.
+### D. Home Screen Live Market Snapshot (`src/components/screens/HomeScreen.tsx`)
+- Replace the static 7-day Recharts sparkline chart in the "Live Market Snapshot" section with the real-time Binance Spot ticker cards and an embedded live candlestick + volume chart for the selected snapshot coin (`BTC`, `ETH`, `SOL`) with timeframe controls.

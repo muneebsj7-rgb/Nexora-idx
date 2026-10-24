@@ -2,15 +2,11 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Transaction } from '../../types';
 import {
-  Wallet,
   ArrowDownLeft,
   ArrowUpRight,
-  Clock,
   CheckCircle2,
-  AlertCircle,
   Copy,
   Check,
-  Filter,
   X,
   Pickaxe,
   Gift,
@@ -21,29 +17,32 @@ import {
   RefreshCw,
   XCircle,
   FileText,
-  ExternalLink
 } from 'lucide-react';
 import { DepositModal } from '../modals/DepositModal';
 import { WithdrawModal } from '../modals/WithdrawModal';
 import { CoinIcon } from '../ui/CoinIcon';
 import { GradientIcon } from '../ui/GradientIcon';
-import { AdminService, PendingDepositItem, AdminSetupStatus } from '../../services/adminService';
+import { AdminService, PendingRequestItem, AdminSetupStatus } from '../../services/adminService';
 
 export const WalletScreen: React.FC = () => {
-  const { user, walletAssets, transactions, addToast, openAuthModal } = useApp();
+  const { user, walletAssets, transactions, addToast, openAuthModal, refreshWalletState } = useApp();
 
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [selectedAssetSymbol, setSelectedAssetSymbol] = useState('USDT');
-  const [txFilter, setTxFilter] = useState<'ALL' | 'PAYOUT' | 'DEPOSIT' | 'WITHDRAWAL' | 'REJECTED'>('ALL');
+  const [txFilter, setTxFilter] = useState<'ALL' | 'PAYOUT' | 'DEPOSIT' | 'WITHDRAWAL' | 'REWARD' | 'REJECTED'>('ALL');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [copiedTx, setCopiedTx] = useState(false);
 
   // Admin state
   const isAuthorizedAdmin = AdminService.isAuthorizedAdmin(user);
   const [adminPanelOpen, setAdminPanelOpen] = useState(true);
-  const [adminPendingDeposits, setAdminPendingDeposits] = useState<PendingDepositItem[]>([]);
-  const [loadingPendingDeposits, setLoadingPendingDeposits] = useState(false);
+  const [adminQueueTab, setAdminQueueTab] = useState<'DEPOSITS' | 'REWARDS' | 'WITHDRAWALS'>('DEPOSITS');
+  const [adminPendingDeposits, setAdminPendingDeposits] = useState<PendingRequestItem[]>([]);
+  const [adminPendingRewards, setAdminPendingRewards] = useState<PendingRequestItem[]>([]);
+  const [adminPendingWithdrawals, setAdminPendingWithdrawals] = useState<PendingRequestItem[]>([]);
+  const [loadingPendingRequests, setLoadingPendingRequests] = useState(false);
+  const [reconcilingConsole, setReconcilingConsole] = useState(false);
   const [actionInProgressId, setActionInProgressId] = useState<string | null>(null);
   const [adminSetupStatus, setAdminSetupStatus] = useState<AdminSetupStatus | null>(null);
   const [showSetupDetails, setShowSetupDetails] = useState(false);
@@ -52,21 +51,23 @@ export const WalletScreen: React.FC = () => {
   const totalLockedUSD = walletAssets.reduce((acc, a) => acc + a.lockedBalance * a.usdRate, 0);
   const totalUSD = availableUSD + totalLockedUSD;
 
-  // Load pending deposits if authorized admin
+  // Load pending requests across all categories if authorized admin
   const loadAdminData = async () => {
     if (!isAuthorizedAdmin) return;
-    setLoadingPendingDeposits(true);
+    setLoadingPendingRequests(true);
     try {
-      const [deposits, status] = await Promise.all([
-        AdminService.fetchPendingDeposits().catch(() => []),
+      const [bundle, status] = await Promise.all([
+        AdminService.fetchPendingRequests().catch(() => ({ deposits: [], rewards: [], withdrawals: [] })),
         AdminService.fetchSetupStatus().catch(() => null),
       ]);
-      setAdminPendingDeposits(deposits);
+      setAdminPendingDeposits(bundle.deposits);
+      setAdminPendingRewards(bundle.rewards);
+      setAdminPendingWithdrawals(bundle.withdrawals);
       if (status) setAdminSetupStatus(status);
     } catch {
       // ignore
     } finally {
-      setLoadingPendingDeposits(false);
+      setLoadingPendingRequests(false);
     }
   };
 
@@ -86,14 +87,20 @@ export const WalletScreen: React.FC = () => {
         addToast('Deposit Approved & Credited!', res.message, 'success');
       }
       setAdminPendingDeposits((prev) => prev.filter((d) => d.id !== txId));
+      await refreshWalletState();
       if (selectedTx && selectedTx.id === txId) {
-        setSelectedTx((prev) => prev ? {
-          ...prev,
-          status: 'COMPLETED',
-          walletCredited: true,
-          creditedAmount: res.creditedAmount,
-          creditedAsset: res.creditedAsset,
-        } : null);
+        setSelectedTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'COMPLETED',
+                walletCredited: true,
+                settlementStatus: 'CREDITED',
+                creditedAmount: res.creditedAmount,
+                creditedAsset: res.creditedAsset,
+              }
+            : null
+        );
       }
     } catch (err: any) {
       addToast('Approval Error', err?.message || 'Failed to approve deposit.', 'error');
@@ -105,15 +112,25 @@ export const WalletScreen: React.FC = () => {
   const handleRejectDeposit = async (userId: string, txId: string, customReason?: string) => {
     setActionInProgressId(txId);
     try {
-      const res = await AdminService.rejectDeposit(userId, txId, customReason || 'Transaction unconfirmed on blockchain network.');
+      const res = await AdminService.rejectDeposit(
+        userId,
+        txId,
+        customReason || 'Transaction unconfirmed on blockchain network.'
+      );
       addToast('Deposit Request Rejected', res.message, 'warning');
       setAdminPendingDeposits((prev) => prev.filter((d) => d.id !== txId));
+      await refreshWalletState();
       if (selectedTx && selectedTx.id === txId) {
-        setSelectedTx((prev) => prev ? {
-          ...prev,
-          status: 'REJECTED',
-          rejectionReason: customReason || 'Transaction unconfirmed on blockchain network.',
-        } : null);
+        setSelectedTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'REJECTED',
+                settlementStatus: 'REJECTED',
+                rejectionReason: customReason || 'Transaction unconfirmed on blockchain network.',
+              }
+            : null
+        );
       }
     } catch (err: any) {
       addToast('Rejection Error', err?.message || 'Failed to reject deposit.', 'error');
@@ -122,10 +139,156 @@ export const WalletScreen: React.FC = () => {
     }
   };
 
+  const handleApproveReward = async (userId: string, txId: string) => {
+    setActionInProgressId(txId);
+    try {
+      const res = await AdminService.approveReward(userId, txId);
+      if (res.alreadyProcessed) {
+        addToast('Already Credited', res.message, 'info');
+      } else {
+        addToast('Bonus Claim Approved & Credited!', res.message, 'success');
+      }
+      setAdminPendingRewards((prev) => prev.filter((r) => r.id !== txId));
+      await refreshWalletState();
+      if (selectedTx && selectedTx.id === txId) {
+        setSelectedTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'COMPLETED',
+                walletCredited: true,
+                settlementStatus: 'CREDITED',
+                creditedAmount: res.creditedAmount,
+                creditedAsset: res.creditedAsset,
+              }
+            : null
+        );
+      }
+    } catch (err: any) {
+      addToast('Reward Approval Error', err?.message || 'Failed to approve reward claim.', 'error');
+    } finally {
+      setActionInProgressId(null);
+    }
+  };
+
+  const handleRejectReward = async (userId: string, txId: string, customReason?: string) => {
+    setActionInProgressId(txId);
+    try {
+      const res = await AdminService.rejectReward(
+        userId,
+        txId,
+        customReason || 'Bonus claim eligibility verification failed.'
+      );
+      addToast('Bonus Claim Rejected', res.message, 'warning');
+      setAdminPendingRewards((prev) => prev.filter((r) => r.id !== txId));
+      await refreshWalletState();
+      if (selectedTx && selectedTx.id === txId) {
+        setSelectedTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'REJECTED',
+                settlementStatus: 'REJECTED',
+                rejectionReason: customReason || 'Bonus claim eligibility verification failed.',
+              }
+            : null
+        );
+      }
+    } catch (err: any) {
+      addToast('Reward Rejection Error', err?.message || 'Failed to reject reward claim.', 'error');
+    } finally {
+      setActionInProgressId(null);
+    }
+  };
+
+  const handleApproveWithdrawal = async (userId: string, txId: string) => {
+    setActionInProgressId(txId);
+    try {
+      const res = await AdminService.approveWithdrawal(userId, txId);
+      if (res.alreadyProcessed) {
+        addToast('Already Settled', res.message, 'info');
+      } else {
+        addToast('Withdrawal Paid & Settled!', res.message, 'success');
+      }
+      setAdminPendingWithdrawals((prev) => prev.filter((w) => w.id !== txId));
+      await refreshWalletState();
+      if (selectedTx && selectedTx.id === txId) {
+        setSelectedTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'COMPLETED',
+                walletSettled: true,
+                settlementStatus: 'PAID',
+                netPayoutAmount: res.netPayoutAmount,
+              }
+            : null
+        );
+      }
+    } catch (err: any) {
+      addToast('Withdrawal Settlement Error', err?.message || 'Failed to settle withdrawal.', 'error');
+    } finally {
+      setActionInProgressId(null);
+    }
+  };
+
+  const handleRejectWithdrawal = async (userId: string, txId: string, customReason?: string) => {
+    setActionInProgressId(txId);
+    try {
+      const res = await AdminService.rejectWithdrawal(
+        userId,
+        txId,
+        customReason || 'Withdrawal rejected by administrator; reserved funds refunded.'
+      );
+      addToast(
+        res.refunded ? 'Withdrawal Rejected & Refunded' : 'Withdrawal Rejected',
+        res.message,
+        'warning'
+      );
+      setAdminPendingWithdrawals((prev) => prev.filter((w) => w.id !== txId));
+      await refreshWalletState();
+      if (selectedTx && selectedTx.id === txId) {
+        setSelectedTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'REJECTED',
+                walletSettled: true,
+                refunded: res.refunded,
+                settlementStatus: res.refunded ? 'REFUNDED' : 'REJECTED',
+              }
+            : null
+        );
+      }
+    } catch (err: any) {
+      addToast('Withdrawal Rejection Error', err?.message || 'Failed to reject withdrawal.', 'error');
+    } finally {
+      setActionInProgressId(null);
+    }
+  };
+
+  const handleReconcileConsoleEdits = async () => {
+    setReconcilingConsole(true);
+    try {
+      const res = await AdminService.reconcileSettlements();
+      await Promise.all([refreshWalletState(), loadAdminData()]);
+      addToast(
+        res.reconciledCount > 0 ? 'Console Edits Reconciled!' : 'Ledger Up to Date',
+        res.message,
+        res.reconciledCount > 0 ? 'success' : 'info'
+      );
+    } catch (err: any) {
+      addToast('Reconciliation Notice', err?.message || 'Failed to reconcile manual Console edits.', 'error');
+    } finally {
+      setReconcilingConsole(false);
+    }
+  };
+
   const filteredTransactions = transactions.filter((tx) => {
     if (txFilter === 'PAYOUT') return tx.type === 'MINING_PAYOUT';
     if (txFilter === 'DEPOSIT') return tx.type === 'DEPOSIT';
     if (txFilter === 'WITHDRAWAL') return tx.type === 'WITHDRAWAL';
+    if (txFilter === 'REWARD') return tx.type === 'TASK_REWARD' || tx.type === 'REFERRAL_BONUS';
     if (txFilter === 'REJECTED') return tx.status === 'REJECTED' || tx.status === 'FAILED';
     return true;
   });
@@ -160,6 +323,53 @@ export const WalletScreen: React.FC = () => {
 
   const isRealUser = Boolean(user && !user.isDemo);
 
+  // Merge local real-time pending transactions with admin cross-user queues
+  const pendingDepositsList = React.useMemo(() => {
+    const map = new Map<string, PendingRequestItem>();
+    transactions
+      .filter((t) => !t.isDemo && t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION')
+      .forEach((t) => map.set(t.id, { ...t, userId: t.userId || user?.id || '' }));
+    adminPendingDeposits.forEach((d) => map.set(d.id, d));
+    return Array.from(map.values());
+  }, [transactions, adminPendingDeposits, user?.id]);
+
+  const pendingRewardsList = React.useMemo(() => {
+    const map = new Map<string, PendingRequestItem>();
+    transactions
+      .filter(
+        (t) =>
+          !t.isDemo &&
+          (t.type === 'TASK_REWARD' || t.type === 'REFERRAL_BONUS') &&
+          (t.status === 'PENDING_REVIEW' || t.status === 'PENDING_CONFIRMATION')
+      )
+      .forEach((t) => map.set(t.id, { ...t, userId: t.userId || user?.id || '' }));
+    adminPendingRewards.forEach((r) => map.set(r.id, r));
+    return Array.from(map.values());
+  }, [transactions, adminPendingRewards, user?.id]);
+
+  const pendingWithdrawalsList = React.useMemo(() => {
+    const map = new Map<string, PendingRequestItem>();
+    transactions
+      .filter((t) => !t.isDemo && t.type === 'WITHDRAWAL' && t.status === 'PENDING_REVIEW')
+      .forEach((t) => map.set(t.id, { ...t, userId: t.userId || user?.id || '' }));
+    adminPendingWithdrawals.forEach((w) => map.set(w.id, w));
+    return Array.from(map.values());
+  }, [transactions, adminPendingWithdrawals, user?.id]);
+
+  const getStatusLabel = (tx: Transaction) => {
+    if (tx.status === 'PENDING_CONFIRMATION') return 'Awaiting Confirmation';
+    if (tx.status === 'PENDING_REVIEW') {
+      return tx.type === 'TASK_REWARD' ? 'Pending Verification' : 'Compliance Review';
+    }
+    if (tx.status === 'COMPLETED') {
+      return tx.type === 'WITHDRAWAL' ? 'Paid & Settled' : 'Approved & Credited';
+    }
+    if (tx.status === 'REJECTED') {
+      return tx.refunded ? 'Rejected • Refunded' : 'Rejected';
+    }
+    return tx.status.replace('_', ' ');
+  };
+
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6 pb-24 px-4 sm:px-6 pt-2 animate-in fade-in duration-300">
       {/* Header */}
@@ -191,7 +401,7 @@ export const WalletScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Administrator Deposit Settlement Desk */}
+      {/* Administrator Verification & Settlement Desk */}
       {isAuthorizedAdmin && (
         <div className="rounded-3xl p-5 border border-[#F3B64B]/40 bg-gradient-to-br from-[#1A1813] via-[#121925] to-[#121925] shadow-2xl relative overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#253144]">
@@ -200,28 +410,37 @@ export const WalletScreen: React.FC = () => {
                 <ShieldCheck className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-sm font-extrabold text-[#F4F7FC]">
-                    Admin Deposit Verification & Settlement Desk
+                    Admin Financial Verification & Settlement Desk
                   </h2>
                   <span className="text-[10px] px-2 py-0.5 rounded-full font-mono font-bold bg-[#F3B64B]/20 text-[#F3B64B] border border-[#F3B64B]/40">
                     {user?.email || 'Admin'}
                   </span>
                 </div>
                 <p className="text-[11px] text-[#98A6BA] mt-0.5">
-                  Authoritatively verify blockchain deposits and atomically credit users' available balances
+                  Atomically settle deposits, daily bonus / task claims, and withdrawal payouts with idempotency protection
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleReconcileConsoleEdits}
+                disabled={reconcilingConsole}
+                className="py-1.5 px-3 rounded-xl bg-[#00D6A3]/15 hover:bg-[#00D6A3]/25 text-[#00D6A3] border border-[#00D6A3]/30 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                title="Settle any records whose status was manually edited in Firebase Console"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${reconcilingConsole ? 'animate-spin' : ''}`} />
+                <span>{reconcilingConsole ? 'Reconciling...' : 'Sync & Settle Console Edits'}</span>
+              </button>
               <button
                 onClick={loadAdminData}
-                disabled={loadingPendingDeposits}
+                disabled={loadingPendingRequests}
                 className="py-1.5 px-3 rounded-xl bg-[#0D121C] hover:bg-[#182232] text-[#98A6BA] hover:text-[#F4F7FC] border border-[#253144] text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                title="Refresh pending deposits"
+                title="Refresh pending requests"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${loadingPendingDeposits ? 'animate-spin text-[#00D6A3]' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingPendingRequests ? 'animate-spin text-[#00D6A3]' : ''}`} />
                 <span>Refresh Queue</span>
               </button>
               <button
@@ -238,7 +457,7 @@ export const WalletScreen: React.FC = () => {
               {/* Architecture & Security Notice */}
               <div className="p-3 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                 <div className="text-[11px] text-[#98A6BA] leading-relaxed">
-                  <span className="font-semibold text-[#00D6A3]">Security Invariant:</span> Client-side wallet balance writes are prohibited by Firestore security rules (<code className="font-mono text-[#00D6A3]">match /wallet/* &#123; allow write: if false; &#125;</code>). Clicking <strong>Approve & Credit Balance</strong> triggers a trusted backend transaction that verifies idempotency and credits the user's available balance in Firestore.
+                  <span className="font-semibold text-[#00D6A3]">Security Invariant:</span> Client-side wallet balance writes are prohibited by Firestore security rules (<code className="font-mono text-[#00D6A3]">match /wallet/* &#123; allow write: if false; &#125;</code>). Use the buttons below to execute atomic server-side settlement, or click <strong>Sync &amp; Settle Console Edits</strong> if you manually edited a status in Firebase Console.
                 </div>
                 <button
                   onClick={() => setShowSetupDetails(!showSetupDetails)}
@@ -271,101 +490,325 @@ export const WalletScreen: React.FC = () => {
                 </div>
               )}
 
-              {/* Pending Queue List */}
-              {(() => {
-                const map = new Map<string, PendingDepositItem>();
-                transactions
-                  .filter((t) => t.type === 'DEPOSIT' && t.status === 'PENDING_CONFIRMATION')
-                  .forEach((t) => {
-                    map.set(t.id, {
-                      ...t,
-                      userId: t.userId || user?.id || '',
-                    });
-                  });
-                adminPendingDeposits.forEach((d) => {
-                  map.set(d.id, d);
-                });
-                const pendingList: PendingDepositItem[] = Array.from(map.values());
+              {/* Queue Category Tabs */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                <button
+                  onClick={() => setAdminQueueTab('DEPOSITS')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    adminQueueTab === 'DEPOSITS'
+                      ? 'bg-[#00D6A3] text-[#080B12]'
+                      : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
+                  }`}
+                >
+                  <span>Deposits</span>
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                    {pendingDepositsList.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setAdminQueueTab('REWARDS')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    adminQueueTab === 'REWARDS'
+                      ? 'bg-[#00D6A3] text-[#080B12]'
+                      : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
+                  }`}
+                >
+                  <span>Daily Bonus &amp; Bounties</span>
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                    {pendingRewardsList.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setAdminQueueTab('WITHDRAWALS')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    adminQueueTab === 'WITHDRAWALS'
+                      ? 'bg-[#00D6A3] text-[#080B12]'
+                      : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
+                  }`}
+                >
+                  <span>Withdrawals</span>
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                    {pendingWithdrawalsList.length}
+                  </span>
+                </button>
+              </div>
 
-                return (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs text-[#98A6BA] font-semibold px-1">
-                      <span>Pending Deposit Queue ({pendingList.length})</span>
+              {/* TAB 1: DEPOSITS */}
+              {adminQueueTab === 'DEPOSITS' && (
+                <div className="space-y-2">
+                  {pendingDepositsList.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
+                      No pending deposits awaiting verification.
                     </div>
-
-                    {pendingList.length === 0 ? (
-                      <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
-                        No pending deposits awaiting verification. All deposits are either completed or unsubmitted.
-                      </div>
-                    ) : (
-                      pendingList.map((deposit) => (
-                    <div
-                      key={deposit.id}
-                      className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
-                    >
-                      <div className="space-y-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-extrabold text-[#F4F7FC] text-sm">
-                            +{deposit.amount} {deposit.asset}
-                          </span>
-                          <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
-                            PENDING CONFIRMATION
-                          </span>
-                          {deposit.network && (
-                            <span className="text-[10px] text-[#98A6BA] font-mono">
-                              ({deposit.network})
+                  ) : (
+                    pendingDepositsList.map((deposit) => (
+                      <div
+                        key={deposit.id}
+                        className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-extrabold text-[#F4F7FC] text-sm">
+                              +{deposit.amount} {deposit.asset}
                             </span>
-                          )}
+                            <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                              PENDING CONFIRMATION
+                            </span>
+                            {deposit.network && (
+                              <span className="text-[10px] text-[#98A6BA] font-mono">({deposit.network})</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-2 flex-wrap">
+                            <span>
+                              User: <strong className="text-[#F4F7FC]">{deposit.userId}</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              TxID: <strong className="text-[#25B9F3]">{deposit.txHash || deposit.id}</strong>
+                            </span>
+                            {deposit.txHash && (
+                              <button
+                                onClick={() => copyTxHash(deposit.txHash)}
+                                className="text-[#98A6BA] hover:text-[#F4F7FC]"
+                                title="Copy Tx Hash"
+                              >
+                                <Copy className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-2 flex-wrap">
-                          <span>User: <strong className="text-[#F4F7FC]">{deposit.userId}</strong></span>
-                          <span>•</span>
-                          <span>TxID: <strong className="text-[#25B9F3]">{deposit.txHash || deposit.id}</strong></span>
-                          {deposit.txHash && (
-                            <button
-                              onClick={() => copyTxHash(deposit.txHash)}
-                              className="text-[#98A6BA] hover:text-[#F4F7FC]"
-                              title="Copy Tx Hash"
-                            >
-                              <Copy className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => handleRejectDeposit(deposit.userId, deposit.id)}
-                          disabled={actionInProgressId === deposit.id}
-                          className="py-1.5 px-3 rounded-xl bg-[#080B12] hover:bg-[#FF4D4D]/20 text-[#FF4D4D] border border-[#FF4D4D]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
-                        >
-                          <XCircle className="w-3.5 h-3.5" />
-                          <span>Reject</span>
-                        </button>
-                        <button
-                          onClick={() => handleApproveDeposit(deposit.userId, deposit.id)}
-                          disabled={actionInProgressId === deposit.id}
-                          className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
-                        >
-                          {actionInProgressId === deposit.id ? (
-                            <>
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              <span>Crediting...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Check className="w-3.5 h-3.5 stroke-[3px]" />
-                              <span>Approve & Credit Balance</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleRejectDeposit(deposit.userId, deposit.id)}
+                            disabled={actionInProgressId === deposit.id}
+                            className="py-1.5 px-3 rounded-xl bg-[#080B12] hover:bg-[#FF4D4D]/20 text-[#FF4D4D] border border-[#FF4D4D]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                          <button
+                            onClick={() => handleApproveDeposit(deposit.userId, deposit.id)}
+                            disabled={actionInProgressId === deposit.id}
+                            className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+                          >
+                            {actionInProgressId === deposit.id ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Crediting...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-3.5 h-3.5 stroke-[3px]" />
+                                <span>Approve &amp; Credit Balance</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: DAILY BONUS & BOUNTY CLAIMS */}
+              {adminQueueTab === 'REWARDS' && (
+                <div className="space-y-2">
+                  {pendingRewardsList.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
+                      No pending daily streak or bounty reward claims awaiting approval.
                     </div>
-                      ))
-                    )}
-                  </div>
-                );
-              })()}
+                  ) : (
+                    pendingRewardsList.map((reward) => (
+                      <div
+                        key={reward.id}
+                        className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-extrabold text-[#00D6A3] text-sm">
+                              +{reward.amount} {reward.asset}
+                            </span>
+                            <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#25B9F3]/15 text-[#25B9F3] border border-[#25B9F3]/30">
+                              PENDING VERIFICATION
+                            </span>
+                            {reward.taskId ? (
+                              <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#00D6A3]/15 text-[#00D6A3] border border-[#00D6A3]/30">
+                                Task: {reward.taskId}
+                              </span>
+                            ) : reward.rewardDay || reward.streakDay ? (
+                              <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#00D6A3]/15 text-[#00D6A3] border border-[#00D6A3]/30">
+                                {reward.streakDay ? `Day ${reward.streakDay}` : ''}{' '}
+                                {typeof reward.rewardDay === 'string'
+                                  ? `(UTC: ${reward.rewardDay})`
+                                  : typeof reward.rewardDay === 'number' && !reward.streakDay
+                                  ? `Day ${reward.rewardDay}`
+                                  : ''}
+                              </span>
+                            ) : (
+                              <span
+                                className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30"
+                                title="Legacy claim without inline rewardDay/taskId; approval verifies users/{uid}/rewards/dailyStreak proof or use Reject to cancel."
+                              >
+                                Legacy Metadata (Streak Proof Required)
+                              </span>
+                            )}
+                            {reward.claimDate && reward.rewardDay !== reward.claimDate && (
+                              <span className="text-[10px] text-[#98A6BA] font-mono">
+                                (UTC: {reward.claimDate})
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-semibold text-[#F4F7FC] truncate">
+                            {reward.note || 'Daily Streak / Task Reward Claim'}
+                          </div>
+                          <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-2 flex-wrap">
+                            <span>
+                              User: <strong className="text-[#F4F7FC]">{reward.userId}</strong>
+                            </span>
+                            <span>•</span>
+                            <span>
+                              Claim ID: <strong className="text-[#25B9F3]">{reward.id}</strong>
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleRejectReward(reward.userId, reward.id)}
+                            disabled={actionInProgressId === reward.id}
+                            className="py-1.5 px-3 rounded-xl bg-[#080B12] hover:bg-[#FF4D4D]/20 text-[#FF4D4D] border border-[#FF4D4D]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                          <button
+                            onClick={() => handleApproveReward(reward.userId, reward.id)}
+                            disabled={actionInProgressId === reward.id}
+                            className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+                          >
+                            {actionInProgressId === reward.id ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Crediting...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-3.5 h-3.5 stroke-[3px]" />
+                                <span>Approve &amp; Credit Bonus</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: WITHDRAWALS */}
+              {adminQueueTab === 'WITHDRAWALS' && (
+                <div className="space-y-2">
+                  {pendingWithdrawalsList.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-[#98A6BA] bg-[#0D121C] rounded-2xl border border-[#253144]">
+                      No pending withdrawal requests awaiting payout settlement.
+                    </div>
+                  ) : (
+                    pendingWithdrawalsList.map((withdrawal) => {
+                      const fee = withdrawal.fee || 0;
+                      const netPayout =
+                        withdrawal.netPayoutAmount ?? Number(Math.max(0, withdrawal.amount - fee).toFixed(8));
+
+                      return (
+                        <div
+                          key={withdrawal.id}
+                          className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                        >
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono font-extrabold text-[#F4F7FC] text-sm">
+                                -{withdrawal.amount} {withdrawal.asset}
+                              </span>
+                              <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#25B9F3]/15 text-[#25B9F3] border border-[#25B9F3]/30">
+                                PENDING PAYOUT
+                              </span>
+                              {withdrawal.reservedFromBalance && (
+                                <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                                  ESCROW LOCKED
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] font-mono text-[#98A6BA] flex items-center gap-3 flex-wrap">
+                              <span>
+                                Fee: <strong className="text-[#F4F7FC]">{fee} {withdrawal.asset}</strong>
+                              </span>
+                              <span>•</span>
+                              <span>
+                                Net Payout:{' '}
+                                <strong className="text-[#00D6A3]">
+                                  {netPayout} {withdrawal.asset}
+                                </strong>
+                              </span>
+                              {withdrawal.network && (
+                                <>
+                                  <span>•</span>
+                                  <span>{withdrawal.network}</span>
+                                </>
+                              )}
+                            </div>
+                            <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-2 flex-wrap">
+                              <span>
+                                User: <strong className="text-[#F4F7FC]">{withdrawal.userId}</strong>
+                              </span>
+                              {withdrawal.toAddress && (
+                                <>
+                                  <span>•</span>
+                                  <span>
+                                    To: <strong className="text-[#25B9F3]">{withdrawal.toAddress}</strong>
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => handleRejectWithdrawal(withdrawal.userId, withdrawal.id)}
+                              disabled={actionInProgressId === withdrawal.id}
+                              className="py-1.5 px-3 rounded-xl bg-[#080B12] hover:bg-[#FF4D4D]/20 text-[#FF4D4D] border border-[#FF4D4D]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
+                              title={
+                                withdrawal.reservedFromBalance
+                                  ? 'Reject and refund reserved funds back to available balance'
+                                  : 'Reject withdrawal request'
+                              }
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>{withdrawal.reservedFromBalance ? 'Reject & Refund' : 'Reject'}</span>
+                            </button>
+                            <button
+                              onClick={() => handleApproveWithdrawal(withdrawal.userId, withdrawal.id)}
+                              disabled={actionInProgressId === withdrawal.id}
+                              className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+                            >
+                              {actionInProgressId === withdrawal.id ? (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Settling...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3.5 h-3.5 stroke-[3px]" />
+                                  <span>Approve &amp; Mark Paid</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -392,7 +835,7 @@ export const WalletScreen: React.FC = () => {
             <div className="text-3xl sm:text-4xl font-extrabold text-[#F4F7FC] font-mono mt-1 tracking-tight">
               ${totalUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <div className="flex items-center gap-4 mt-2 text-xs text-[#98A6BA]">
+            <div className="flex items-center gap-4 mt-2 text-xs text-[#98A6BA] flex-wrap">
               <span>
                 Available:{' '}
                 <strong className="text-[#00D6A3] font-mono">
@@ -409,7 +852,7 @@ export const WalletScreen: React.FC = () => {
 
             {isRealUser && (
               <p className="mt-3 text-[11px] text-[#98A6BA] max-w-xl leading-relaxed">
-                <span className="text-[#00D6A3] font-semibold">Financial Security:</span> Wallet balances are locked against client-side modification by Firestore security rules. Client transactions are stored as pending requests and require trusted backend or admin processing to adjust balances.
+                <span className="text-[#00D6A3] font-semibold">Financial Security:</span> Wallet balances are locked against client-side modification by Firestore security rules. Client transactions are stored as pending requests and require trusted backend or admin settlement to adjust balances.
               </p>
             )}
           </div>
@@ -465,7 +908,7 @@ export const WalletScreen: React.FC = () => {
 
               {asset.lockedBalance > 0 && (
                 <div className="mt-2 text-[10px] text-[#F3B64B] font-mono">
-                  Locked in review: {asset.lockedBalance} {asset.symbol}
+                  Locked in withdrawal escrow: {asset.lockedBalance} {asset.symbol}
                 </div>
               )}
 
@@ -497,7 +940,7 @@ export const WalletScreen: React.FC = () => {
             <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider">
               Comprehensive Audit Ledger
             </h2>
-            <p className="text-xs text-[#98A6BA]">Every deposit, withdrawal, and cloud payout record</p>
+            <p className="text-xs text-[#98A6BA]">Every deposit, withdrawal, reward claim, and cloud payout record</p>
           </div>
 
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
@@ -512,16 +955,6 @@ export const WalletScreen: React.FC = () => {
               All Records
             </button>
             <button
-              onClick={() => setTxFilter('PAYOUT')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
-                txFilter === 'PAYOUT'
-                  ? 'bg-[#00D6A3] text-[#080B12] font-bold'
-                  : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
-              }`}
-            >
-              Mining Payouts
-            </button>
-            <button
               onClick={() => setTxFilter('DEPOSIT')}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
                 txFilter === 'DEPOSIT'
@@ -532,6 +965,16 @@ export const WalletScreen: React.FC = () => {
               Deposits
             </button>
             <button
+              onClick={() => setTxFilter('REWARD')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
+                txFilter === 'REWARD'
+                  ? 'bg-[#00D6A3] text-[#080B12] font-bold'
+                  : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
+              }`}
+            >
+              Bonuses &amp; Claims
+            </button>
+            <button
               onClick={() => setTxFilter('WITHDRAWAL')}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
                 txFilter === 'WITHDRAWAL'
@@ -540,6 +983,16 @@ export const WalletScreen: React.FC = () => {
               }`}
             >
               Withdrawals
+            </button>
+            <button
+              onClick={() => setTxFilter('PAYOUT')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
+                txFilter === 'PAYOUT'
+                  ? 'bg-[#00D6A3] text-[#080B12] font-bold'
+                  : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
+              }`}
+            >
+              Mining Payouts
             </button>
             <button
               onClick={() => setTxFilter('REJECTED')}
@@ -593,35 +1046,38 @@ export const WalletScreen: React.FC = () => {
                       <div className="text-[10px] text-[#98A6BA] font-mono mt-0.5 truncate flex items-center gap-1.5">
                         <span>{new Date(tx.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
                         {tx.network && <span>• {tx.network}</span>}
+                        {tx.type === 'WITHDRAWAL' && tx.fee > 0 && (
+                          <span>
+                            • Net: {tx.netPayoutAmount ?? Number((tx.amount - tx.fee).toFixed(6))} {tx.asset}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="text-right shrink-0">
-                    <div className={`font-mono font-bold text-xs ${isRejected ? 'text-[#98A6BA] line-through' : isPositive ? 'text-[#19C784]' : 'text-[#F4F7FC]'}`}>
+                    <div
+                      className={`font-mono font-bold text-xs ${
+                        isRejected ? 'text-[#98A6BA] line-through' : isPositive ? 'text-[#19C784]' : 'text-[#F4F7FC]'
+                      }`}
+                    >
                       {isPositive ? '+' : '-'}{tx.amount} {tx.asset}
                     </div>
                     <div className="mt-0.5">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold inline-block ${
-                        tx.status === 'COMPLETED'
-                          ? 'bg-[#19C784]/15 text-[#19C784] border border-[#19C784]/30'
-                          : tx.status === 'PENDING_CONFIRMATION'
-                          ? 'bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30'
-                          : tx.status === 'PENDING_REVIEW'
-                          ? 'bg-[#25B9F3]/15 text-[#25B9F3] border border-[#25B9F3]/30'
-                          : isRejected
-                          ? 'bg-[#FF4D4D]/15 text-[#FF4D4D] border border-[#FF4D4D]/30'
-                          : 'bg-[#182232] text-[#98A6BA] border border-[#253144]'
-                      }`}>
-                        {tx.status === 'PENDING_CONFIRMATION'
-                          ? 'Awaiting Confirmation'
-                          : tx.status === 'PENDING_REVIEW'
-                          ? 'Compliance Review'
-                          : tx.status === 'COMPLETED'
-                          ? 'Approved & Credited'
-                          : isRejected
-                          ? 'Rejected'
-                          : tx.status.replace('_', ' ')}
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold inline-block ${
+                          tx.status === 'COMPLETED'
+                            ? 'bg-[#19C784]/15 text-[#19C784] border border-[#19C784]/30'
+                            : tx.status === 'PENDING_CONFIRMATION'
+                            ? 'bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30'
+                            : tx.status === 'PENDING_REVIEW'
+                            ? 'bg-[#25B9F3]/15 text-[#25B9F3] border border-[#25B9F3]/30'
+                            : isRejected
+                            ? 'bg-[#FF4D4D]/15 text-[#FF4D4D] border border-[#FF4D4D]/30'
+                            : 'bg-[#182232] text-[#98A6BA] border border-[#253144]'
+                        }`}
+                      >
+                        {getStatusLabel(tx)}
                       </span>
                     </div>
                   </div>
@@ -634,7 +1090,7 @@ export const WalletScreen: React.FC = () => {
             <p className="font-semibold text-[#F4F7FC]">No transaction records found.</p>
             <p className="text-[11px] text-[#98A6BA]">
               {isRealUser
-                ? 'Your submitted deposit and withdrawal requests will synchronize here in real time.'
+                ? 'Your submitted deposit, bonus claim, and withdrawal requests will synchronize here in real time.'
                 : 'Switch filters or submit a demo transaction above to view records.'}
             </p>
           </div>
@@ -667,7 +1123,9 @@ export const WalletScreen: React.FC = () => {
 
             <div className="mt-4 space-y-3 text-xs">
               <div className="p-4 rounded-xl bg-[#0D121C] border border-[#253144] text-center">
-                <span className="text-[#98A6BA] block text-[11px]">Transaction Amount:</span>
+                <span className="text-[#98A6BA] block text-[11px]">
+                  {selectedTx.type === 'WITHDRAWAL' ? 'Gross Withdrawal Amount:' : 'Transaction Amount:'}
+                </span>
                 <span className="text-2xl font-black font-mono text-[#00D6A3] mt-1 block">
                   {selectedTx.amount} {selectedTx.asset}
                 </span>
@@ -682,11 +1140,14 @@ export const WalletScreen: React.FC = () => {
                 </div>
               ) : selectedTx.status === 'PENDING_CONFIRMATION' ? (
                 <div className="p-2.5 rounded-xl bg-[#F3B64B]/15 border border-[#F3B64B]/30 text-[#F3B64B] text-[11px]">
-                  <strong>Pending Node Confirmation:</strong> This deposit request is saved in Firestore. Client balance modification is blocked by Firestore rules; balances remain unchanged until confirmed and processed.
+                  <strong>Pending Node Confirmation:</strong> This deposit request is saved in Firestore. Available balance remains unchanged until confirmed by an administrator.
                 </div>
               ) : selectedTx.status === 'PENDING_REVIEW' ? (
                 <div className="p-2.5 rounded-xl bg-[#25B9F3]/15 border border-[#25B9F3]/30 text-[#25B9F3] text-[11px]">
-                  <strong>Under Review:</strong> This request is saved in Firestore. Client cannot debit balances directly; trusted server-side logic is required to process requests and update balances.
+                  <strong>{selectedTx.type === 'TASK_REWARD' ? 'Pending Verification:' : 'Under Compliance Review:'}</strong>{' '}
+                  {selectedTx.type === 'WITHDRAWAL' && selectedTx.reservedFromBalance
+                    ? 'Funds are reserved in withdrawal escrow awaiting admin payout settlement.'
+                    : 'Awaiting authorized administrator approval and settlement.'}
                 </div>
               ) : null}
 
@@ -703,16 +1164,36 @@ export const WalletScreen: React.FC = () => {
 
                 <div className="flex justify-between py-1 border-b border-[#253144]">
                   <span className="text-[#98A6BA]">Status:</span>
-                  <span className={`font-mono font-bold ${
-                    selectedTx.status === 'COMPLETED'
-                      ? 'text-[#00D6A3]'
-                      : selectedTx.status === 'REJECTED' || selectedTx.status === 'FAILED'
-                      ? 'text-[#FF4D4D]'
-                      : 'text-[#F3B64B]'
-                  }`}>
-                    {selectedTx.status}
+                  <span
+                    className={`font-mono font-bold ${
+                      selectedTx.status === 'COMPLETED'
+                        ? 'text-[#00D6A3]'
+                        : selectedTx.status === 'REJECTED' || selectedTx.status === 'FAILED'
+                        ? 'text-[#FF4D4D]'
+                        : 'text-[#F3B64B]'
+                    }`}
+                  >
+                    {getStatusLabel(selectedTx)}
                   </span>
                 </div>
+
+                {selectedTx.type === 'WITHDRAWAL' && (
+                  <>
+                    <div className="flex justify-between py-1 border-b border-[#253144]">
+                      <span className="text-[#98A6BA]">Network Fee:</span>
+                      <span className="font-mono text-[#F4F7FC]">
+                        {selectedTx.fee} {selectedTx.asset}
+                      </span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-[#253144]">
+                      <span className="text-[#98A6BA]">Final Net Payout:</span>
+                      <span className="font-mono text-[#00D6A3] font-bold">
+                        {selectedTx.netPayoutAmount ?? Number(Math.max(0, selectedTx.amount - selectedTx.fee).toFixed(8))}{' '}
+                        {selectedTx.asset}
+                      </span>
+                    </div>
+                  </>
+                )}
 
                 {selectedTx.approvedBy && (
                   <div className="flex justify-between py-1 border-b border-[#253144]">
@@ -735,6 +1216,15 @@ export const WalletScreen: React.FC = () => {
                     <span className="text-[#98A6BA]">Wallet Balance Credited:</span>
                     <span className="font-mono text-[#00D6A3] font-bold">
                       +{selectedTx.creditedAmount || selectedTx.amount} {selectedTx.creditedAsset || selectedTx.asset}
+                    </span>
+                  </div>
+                )}
+
+                {selectedTx.refunded && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Escrow Refund:</span>
+                    <span className="font-mono text-[#00D6A3] font-bold">
+                      Refunded +{selectedTx.amount} {selectedTx.asset} to Available
                     </span>
                   </div>
                 )}
