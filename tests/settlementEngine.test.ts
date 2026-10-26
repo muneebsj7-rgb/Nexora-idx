@@ -8,10 +8,17 @@ import {
   reserveWithdrawalRequest,
   settleWithdrawalApproval,
   settleWithdrawalRejection,
+  purchaseMiningContract,
+  AUTHORITATIVE_MINING_PLANS,
+  convertHashrateToGHs,
+  convertHashrateToTHs,
+  convertTHsToGHs,
+  convertGHsToMHs,
   type FirestoreLike,
   type TransactionLike,
   type DocRefLike,
 } from '../src/services/settlementEngine.ts';
+import { isExpectedOfflineError, sanitizeDiagnosticMessage } from '../src/services/firebase.ts';
 
 /**
  * In-memory transactional Firestore mock supporting:
@@ -825,12 +832,323 @@ async function runTests() {
     console.log(
       '✓ Test 8 Passed: All 10 admin endpoints enforce 401/403 against unauthenticated, non-admin, unverified-email, and body-spoofed callers, and 200 for verified admin'
     );
+
+    // ---------------------------------------------------------------------------
+    // Test 9: Authoritative 5-Plan BTC Catalog, Unit Conversions & Server-Side Contract Purchase
+    // ---------------------------------------------------------------------------
+    // 9.0 Verify all 5 official BTC mining contracts and unit conversion math (1 TH/s = 1,000 GH/s, 1 GH/s = 1,000 MH/s)
+    const expectedCatalog = [
+      { id: 'plan_genesis_shaft', name: 'Genesis Shaft', tier: 'Entry', priceUSD: 10.0, hashrate: 10, durationDays: 45, displayedReturnPercent: 150.0 },
+      { id: 'plan_blockfoundry', name: 'Blockfoundry', tier: 'Core', priceUSD: 48.0, hashrate: 18, durationDays: 78, displayedReturnPercent: 158.0 },
+      { id: 'plan_stratum_yard', name: 'Stratum Yard', tier: 'Value', priceUSD: 135.0, hashrate: 34, durationDays: 112, displayedReturnPercent: 172.0 },
+      { id: 'plan_halving_bench', name: 'Halving Bench', tier: 'Pro', priceUSD: 510.0, hashrate: 96, durationDays: 156, displayedReturnPercent: 188.0 },
+      { id: 'plan_epoch_vault', name: 'Epoch Vault', tier: 'Elite', priceUSD: 1480.0, hashrate: 268, durationDays: 210, displayedReturnPercent: 210.0 },
+    ];
+    assert.equal(Object.keys(AUTHORITATIVE_MINING_PLANS).length, 5, 'Must have exactly 5 authoritative BTC contracts');
+    for (const exp of expectedCatalog) {
+      const actual = AUTHORITATIVE_MINING_PLANS[exp.id];
+      assert.ok(actual, `Plan ${exp.id} must exist in AUTHORITATIVE_MINING_PLANS`);
+      assert.equal(actual.name, exp.name);
+      assert.equal(actual.tier, exp.tier);
+      assert.equal(actual.targetCoin, 'BTC');
+      assert.equal(actual.algorithm, 'SHA-256');
+      assert.equal(actual.priceUSD, exp.priceUSD);
+      assert.equal(actual.hashrate, exp.hashrate);
+      assert.equal(actual.hashrateUnit, 'GH/s');
+      assert.equal(actual.hashrateGHs, exp.hashrate);
+      assert.equal(actual.hashrateTHs, Number((exp.hashrate / 1000).toFixed(6)));
+      assert.equal(actual.durationDays, exp.durationDays);
+      assert.equal(actual.displayedReturnPercent, exp.displayedReturnPercent);
+    }
+
+    assert.equal(convertHashrateToTHs(10, 'GH/s'), 0.01);
+    assert.equal(convertHashrateToTHs(268, 'GH/s'), 0.268);
+    assert.equal(convertTHsToGHs(1), 1000);
+    assert.equal(convertGHsToMHs(10), 10000);
+    assert.equal(convertHashrateToGHs(18, 'GH/s'), 18);
+
+    // 9a. Unauthenticated contract purchase -> 401
+    const unauthPurchaseRes = await fetch(`${baseUrl}/api/mining/purchase-contract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planId: 'plan_genesis_shaft', idempotencyKey: 'idem_unauth_123456' }),
+    });
+    assert.equal(unauthPurchaseRes.status, 401, 'Unauthenticated contract purchase must return 401');
+
+    // 9b. Invalid or legacy planId rejected -> 400
+    const invalidPlanRes = await fetch(`${baseUrl}/api/mining/purchase-contract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-regular-user-token',
+      },
+      body: JSON.stringify({ planId: 'plan-999', idempotencyKey: 'idem_badplan_123456' }),
+    });
+    assert.equal(invalidPlanRes.status, 400, 'Unknown planId must return 400');
+
+    // 9c. Insufficient server-confirmed USDT balance rejected (current balance is 250, plan_epoch_vault costs 1480 USDT)
+    const insufficientRes = await fetch(`${baseUrl}/api/mining/purchase-contract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-regular-user-token',
+      },
+      body: JSON.stringify({ planId: 'plan_epoch_vault', idempotencyKey: 'idem_insuff_123456' }),
+    });
+    assert.equal(insufficientRes.status, 400, 'Insufficient USDT balance must return 400');
+    const insufficientBody = await insufficientRes.json();
+    assert.match(String(insufficientBody.error), /Insufficient server-confirmed USDT balance/i);
+    assert.equal(db.peek(`users/${userId}/wallet/USDT`)?.balance, 250, 'Balance must remain unchanged after failed purchase');
+
+    // 9d. Valid contract purchase (plan_blockfoundry costs $48.00 USDT, grants +18 GH/s = +0.018 TH/s for 78 days at 158.0% term return)
+    db.seed(`users/${userId}/mining/session`, {
+      status: 'ACTIVE',
+      hashrateGHs: 10,
+      hashrateTHs: 0.01,
+    });
+
+    const validPurchaseRes = await fetch(`${baseUrl}/api/mining/purchase-contract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-regular-user-token',
+      },
+      body: JSON.stringify({
+        planId: 'plan_blockfoundry',
+        idempotencyKey: 'idem_valid_blockfoundry_001',
+        // Spoofed client parameters that must be completely ignored by server:
+        priceUSD: 0.01,
+        hashrate: 99999,
+        hashrateTHs: 99999,
+        userId: 'other_victim_uid',
+      }),
+    });
+    assert.equal(validPurchaseRes.status, 200, 'Valid contract purchase must return 200');
+    const validPurchaseBody = await validPurchaseRes.json();
+    assert.equal(validPurchaseBody.success, true);
+    assert.equal(validPurchaseBody.alreadyProcessed, false);
+    assert.equal(validPurchaseBody.priceUSD, 48, 'Server must enforce authoritative $48.00 USDT price for plan_blockfoundry');
+    assert.equal(validPurchaseBody.hashrateAddedGHs, 18, 'Server must enforce authoritative 18 GH/s hashrate for plan_blockfoundry');
+    assert.equal(validPurchaseBody.hashrateAddedTHs, 0.018, 'Server must enforce authoritative 0.018 TH/s hashrate for plan_blockfoundry');
+    assert.equal(validPurchaseBody.newBalance, 202, 'USDT balance must decrease atomically from 250 to 202');
+    assert.equal(validPurchaseBody.newHashrateGHs, 28, 'Mining session hashrateGHs must increase atomically from 10 to 28 GH/s');
+    assert.equal(validPurchaseBody.newHashrateTHs, 0.028, 'Mining session hashrateTHs must increase atomically from 0.01 to 0.028 TH/s');
+
+    const orderId = validPurchaseBody.orderId;
+    const savedContract = db.peek(`users/${userId}/contracts/${orderId}`);
+    assert.ok(savedContract, 'Contract document must be written at users/{uid}/contracts/{orderId}');
+    assert.equal(savedContract?.planId, 'plan_blockfoundry');
+    assert.equal(savedContract?.planName, 'Blockfoundry');
+    assert.equal(savedContract?.tier, 'Core');
+    assert.equal(savedContract?.priceUSD, 48);
+    assert.equal(savedContract?.hashrate, 18);
+    assert.equal(savedContract?.hashrateUnit, 'GH/s');
+    assert.equal(savedContract?.hashrateGHs, 18);
+    assert.equal(savedContract?.hashrateTHs, 0.018);
+    assert.equal(savedContract?.durationDays, 78);
+    assert.equal(savedContract?.displayedReturnPercent, 158.0);
+    assert.equal(savedContract?.status, 'ACTIVE');
+
+    const savedPurchaseTx = db.peek(`users/${userId}/transactions/${orderId}`);
+    assert.ok(savedPurchaseTx, 'Transaction document must be written at users/{uid}/transactions/{orderId}');
+    assert.equal(savedPurchaseTx?.type, 'CONTRACT_PURCHASE');
+    assert.equal(savedPurchaseTx?.status, 'COMPLETED');
+    assert.equal(savedPurchaseTx?.settlementStatus, 'PURCHASED');
+    assert.equal(savedPurchaseTx?.walletSettled, true);
+
+    const savedSettlement = db.peek(`users/${userId}/settlements/${orderId}`);
+    assert.ok(savedSettlement, 'Settlement audit record must be written at users/{uid}/settlements/{orderId}');
+    assert.equal(savedSettlement?.settlementStatus, 'PURCHASED');
+    assert.equal(savedSettlement?.previousBalance, 250);
+    assert.equal(savedSettlement?.newBalance, 202);
+
+    const updatedSession = db.peek(`users/${userId}/mining/session`);
+    assert.equal(updatedSession?.activeContractId, orderId);
+    assert.equal(updatedSession?.activeContractName, 'Blockfoundry');
+    assert.equal(updatedSession?.hashrateGHs, 28);
+    assert.equal(updatedSession?.hashrateTHs, 0.028);
+
+    // 9e. Duplicate/concurrent retry with same idempotencyKey is idempotent (no double charge or double hashrate)
+    const duplicatePurchaseRes = await fetch(`${baseUrl}/api/mining/purchase-contract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-regular-user-token',
+      },
+      body: JSON.stringify({
+        planId: 'plan_blockfoundry',
+        idempotencyKey: 'idem_valid_blockfoundry_001',
+      }),
+    });
+    assert.equal(duplicatePurchaseRes.status, 200, 'Idempotent retry must return 200');
+    const duplicatePurchaseBody = await duplicatePurchaseRes.json();
+    assert.equal(duplicatePurchaseBody.alreadyProcessed, true, 'Duplicate idempotencyKey must report alreadyProcessed: true');
+    assert.equal(duplicatePurchaseBody.newBalance, 202, 'USDT balance must remain 202 without double deduction');
+    assert.equal(duplicatePurchaseBody.newHashrateGHs, 28, 'Hashrate must remain 28 GH/s without double increment');
+    assert.equal(duplicatePurchaseBody.newHashrateTHs, 0.028, 'Hashrate must remain 0.028 TH/s without double increment');
+    assert.equal(db.peek(`users/${userId}/wallet/USDT`)?.balance, 202);
+    assert.equal(db.peek(`users/${userId}/mining/session`)?.hashrateGHs, 28);
+
+    // 9f. Offline cache error classification audit
+    assert.equal(
+      isExpectedOfflineError({ code: 'unavailable', message: 'Could not reach Cloud Firestore backend.' }),
+      true,
+      'unavailable error must be classified as expected offline error'
+    );
+    assert.equal(
+      isExpectedOfflineError({ code: 'firestore/unavailable', message: 'Failed to get document because the client is offline.' }),
+      true,
+      'firestore/unavailable offline message must be classified as expected offline error'
+    );
+    assert.equal(
+      isExpectedOfflineError({ code: 'permission-denied', message: 'Missing or insufficient permissions.' }),
+      false,
+      'permission-denied must NEVER be classified as an offline error'
+    );
+    assert.equal(
+      isExpectedOfflineError({ code: 'unauthenticated', message: 'Request had invalid authentication credentials.' }),
+      false,
+      'unauthenticated must NEVER be classified as an offline error'
+    );
+    assert.equal(
+      isExpectedOfflineError({ code: 'invalid-argument', message: 'Invalid document reference.' }),
+      false,
+      'invalid-argument must NEVER be classified as an offline error'
+    );
+    assert.equal(
+      isExpectedOfflineError({ code: 'not-found', message: 'No document to update.' }),
+      false,
+      'not-found must NEVER be classified as an offline error'
+    );
+
+    const sanitizedMsg = sanitizeDiagnosticMessage(
+      'Auth failed with Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    );
+    assert.ok(!sanitizedMsg.includes('eyJhbGci'), 'sanitizeDiagnosticMessage must redact JWT tokens');
+
+    console.log(
+      '✓ Test 9 Passed: All 5 authoritative BTC contracts, GH/s <-> TH/s unit conversions, atomic server-side purchase, idempotency, and offline cache classification verified'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 10: Firestore FAILED_PRECONDITION Missing Composite Index Fallback on Admin Endpoints
+    // ---------------------------------------------------------------------------
+    db.seed(`users/${userId}`, { id: userId, email: 'miner@example.com' });
+    db.seed(`users/${userId}/transactions/TX-FALLBACK-DEP`, {
+      id: 'TX-FALLBACK-DEP',
+      userId,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 120,
+      amountUSD: 120,
+      txHash: '0xfallbackdeposit1234567890abcdef',
+      status: 'PENDING_CONFIRMATION',
+    });
+    db.seed(`users/${userId}/transactions/TX-FALLBACK-REW`, {
+      id: 'TX-FALLBACK-REW',
+      userId,
+      type: 'TASK_REWARD',
+      asset: 'USDT',
+      amount: 0.75,
+      amountUSD: 0.75,
+      rewardDay: '2026-10-26',
+      status: 'PENDING_REVIEW',
+    });
+    db.seed(`users/${userId}/transactions/TX-FALLBACK-WD`, {
+      id: 'TX-FALLBACK-WD',
+      userId,
+      type: 'WITHDRAWAL',
+      asset: 'USDT',
+      amount: 40,
+      amountUSD: 40,
+      toAddress: 'T999888777666555444333222111',
+      status: 'PENDING_REVIEW',
+      reservedFromBalance: true,
+    });
+
+    setFirestoreProviderForTesting(() => ({
+      doc: (p: string) => db.doc(p),
+      runTransaction: (fn: any) => db.runTransaction(fn),
+      collection: (colPath: string) => ({
+        limit: () => ({
+          get: async () => {
+            if (colPath === 'users') {
+              return {
+                docs: [{ id: userId, data: () => ({ id: userId, email: 'miner@example.com' }) }],
+              };
+            }
+            if (colPath === `users/${userId}/transactions`) {
+              const ids = ['TX-FALLBACK-DEP', 'TX-FALLBACK-REW', 'TX-FALLBACK-WD'];
+              return {
+                docs: ids
+                  .map((txId) => {
+                    const raw = db.peek(`users/${userId}/transactions/${txId}`);
+                    if (!raw) return null;
+                    return {
+                      id: txId,
+                      ref: { parent: { parent: { id: userId } } },
+                      data: () => raw,
+                    };
+                  })
+                  .filter(Boolean),
+              };
+            }
+            return { docs: [] };
+          },
+        }),
+      }),
+      collectionGroup: () => ({
+        where: () => ({
+          where: () => ({
+            limit: () => ({
+              get: async () => {
+                const indexErr: any = new Error(
+                  '9 FAILED_PRECONDITION: The query requires an index. You can create it here: https://console.firebase.google.com/...'
+                );
+                indexErr.code = 9;
+                throw indexErr;
+              },
+            }),
+          }),
+        }),
+      }),
+    }));
+
+    const fallbackPendingRes = await fetch(`${baseUrl}/api/admin/pending-requests`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-admin-token' },
+    });
+    assert.equal(
+      fallbackPendingRes.status,
+      200,
+      '/api/admin/pending-requests must return 200 via per-user subcollection fallback when collectionGroup throws FAILED_PRECONDITION'
+    );
+    const fallbackPendingBody = await fallbackPendingRes.json();
+    assert.equal(fallbackPendingBody.deposits.length, 1);
+    assert.equal(fallbackPendingBody.deposits[0].id, 'TX-FALLBACK-DEP');
+    assert.equal(fallbackPendingBody.rewards.length, 1);
+    assert.equal(fallbackPendingBody.rewards[0].id, 'TX-FALLBACK-REW');
+    assert.equal(fallbackPendingBody.withdrawals.length, 1);
+    assert.equal(fallbackPendingBody.withdrawals[0].id, 'TX-FALLBACK-WD');
+
+    const fallbackDepRes = await fetch(`${baseUrl}/api/admin/pending-deposits`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-admin-token' },
+    });
+    assert.equal(fallbackDepRes.status, 200);
+    const fallbackDepBody = await fallbackDepRes.json();
+    assert.equal(fallbackDepBody.deposits.length, 1);
+    assert.equal(fallbackDepBody.deposits[0].id, 'TX-FALLBACK-DEP');
+
+    console.log(
+      '✓ Test 10 Passed: /api/admin/pending-requests and /api/admin/pending-deposits transparently recover from Firestore 9 FAILED_PRECONDITION missing collectionGroup index'
+    );
   } finally {
     resetServerTestHooks();
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
   }
 
-  console.log('\nALL 8 SETTLEMENT & SECURITY VERIFICATION SUITES PASSED.');
+  console.log('\nALL 10 SETTLEMENT & SECURITY VERIFICATION SUITES PASSED.');
 }
 
 runTests().catch((err) => {

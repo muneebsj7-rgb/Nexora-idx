@@ -1192,3 +1192,314 @@ export const rejectWithdrawal = functions.https.onCall(async (data: any, context
     };
   });
 });
+
+/**
+ * 7. CALLABLE HTTPS FUNCTION: Purchase Cloud Mining Contract (Atomic Server-Side Settlement)
+ */
+export const OFFICIAL_MINING_PLANS: Record<
+  string,
+  {
+    id: string;
+    name: string;
+    tier: 'Entry' | 'Core' | 'Value' | 'Pro' | 'Elite';
+    algorithm: 'SHA-256';
+    targetCoin: 'BTC';
+    hashrate: number;
+    hashrateUnit: 'GH/s';
+    hashrateGHs: number;
+    hashrateTHs: number;
+    priceUSD: number;
+    durationDays: number;
+    displayedReturnPercent: number;
+    estimatedDailyYieldCoin: number;
+    estimatedDailyYieldUSD: number;
+    powerConsumptionW: number;
+    maintenanceFeePercent: number;
+  }
+> = {
+  plan_genesis_shaft: {
+    id: 'plan_genesis_shaft',
+    name: 'Genesis Shaft',
+    tier: 'Entry',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 10,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 10,
+    hashrateTHs: 0.01,
+    priceUSD: 10.0,
+    durationDays: 45,
+    displayedReturnPercent: 150.0,
+    estimatedDailyYieldCoin: 0.0000035,
+    estimatedDailyYieldUSD: 0.33,
+    powerConsumptionW: 160,
+    maintenanceFeePercent: 5.0,
+  },
+  plan_blockfoundry: {
+    id: 'plan_blockfoundry',
+    name: 'Blockfoundry',
+    tier: 'Core',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 18,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 18,
+    hashrateTHs: 0.018,
+    priceUSD: 48.0,
+    durationDays: 78,
+    displayedReturnPercent: 158.0,
+    estimatedDailyYieldCoin: 0.00001031,
+    estimatedDailyYieldUSD: 0.97,
+    powerConsumptionW: 288,
+    maintenanceFeePercent: 4.8,
+  },
+  plan_stratum_yard: {
+    id: 'plan_stratum_yard',
+    name: 'Stratum Yard',
+    tier: 'Value',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 34,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 34,
+    hashrateTHs: 0.034,
+    priceUSD: 135.0,
+    durationDays: 112,
+    displayedReturnPercent: 172.0,
+    estimatedDailyYieldCoin: 0.000022,
+    estimatedDailyYieldUSD: 2.07,
+    powerConsumptionW: 544,
+    maintenanceFeePercent: 4.5,
+  },
+  plan_halving_bench: {
+    id: 'plan_halving_bench',
+    name: 'Halving Bench',
+    tier: 'Pro',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 96,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 96,
+    hashrateTHs: 0.096,
+    priceUSD: 510.0,
+    durationDays: 156,
+    displayedReturnPercent: 188.0,
+    estimatedDailyYieldCoin: 0.00006521,
+    estimatedDailyYieldUSD: 6.15,
+    powerConsumptionW: 1536,
+    maintenanceFeePercent: 4.0,
+  },
+  plan_epoch_vault: {
+    id: 'plan_epoch_vault',
+    name: 'Epoch Vault',
+    tier: 'Elite',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 268,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 268,
+    hashrateTHs: 0.268,
+    priceUSD: 1480.0,
+    durationDays: 210,
+    displayedReturnPercent: 210.0,
+    estimatedDailyYieldCoin: 0.00015703,
+    estimatedDailyYieldUSD: 14.8,
+    powerConsumptionW: 4288,
+    maintenanceFeePercent: 3.5,
+  },
+};
+
+export const purchaseMiningContract = functions.https.onCall(
+  async (data: any, context: functions.https.CallableContext) => {
+    if (!context.auth || !context.auth.uid) {
+      throw new functions.https.HttpsError('unauthenticated', 'Authentication is required to purchase a contract.');
+    }
+
+    const userId = context.auth.uid;
+    const planId = String(data?.planId || '').trim();
+    const plan = OFFICIAL_MINING_PLANS[planId];
+    if (!plan) {
+      throw new functions.https.HttpsError('invalid-argument', `Unsupported mining plan '${planId}'.`);
+    }
+
+    const rawKey = String(data?.idempotencyKey || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    if (rawKey.length < 6) {
+      throw new functions.https.HttpsError('invalid-argument', 'Valid idempotencyKey is required.');
+    }
+
+    const orderId = rawKey.startsWith('order_') ? rawKey : `order_${rawKey}`;
+    const settlementId = `settle_${orderId}`;
+
+    const settlementRef = db.doc(`users/${userId}/settlements/${orderId}`);
+    const contractRef = db.doc(`users/${userId}/contracts/${orderId}`);
+    const txRef = db.doc(`users/${userId}/transactions/${orderId}`);
+    const walletRef = db.doc(`users/${userId}/wallet/USDT`);
+    const sessionRef = db.doc(`users/${userId}/mining/session`);
+
+    return await db.runTransaction(async (transaction) => {
+      const [settlementSnap, contractSnap, txSnap, walletSnap, sessionSnap] = await Promise.all([
+        transaction.get(settlementRef),
+        transaction.get(contractRef),
+        transaction.get(txRef),
+        transaction.get(walletRef),
+        transaction.get(sessionRef),
+      ]);
+
+      const currentBalance = walletSnap.exists ? round8(Number(walletSnap.data()?.balance) || 0) : 0;
+      const currentLocked = walletSnap.exists ? round8(Number(walletSnap.data()?.lockedBalance) || 0) : 0;
+      const sessionData = sessionSnap.exists ? sessionSnap.data() || {} : {};
+      const currentHashrateTHs = round8(Number(sessionData.hashrateTHs) || 0);
+      const currentHashrateGHs =
+        typeof sessionData.hashrateGHs === 'number' && Number.isFinite(sessionData.hashrateGHs)
+          ? Number(sessionData.hashrateGHs.toFixed(4))
+          : Number((currentHashrateTHs * 1000).toFixed(4));
+
+      if (settlementSnap.exists || contractSnap.exists || (txSnap.exists && txSnap.data()?.walletSettled === true)) {
+        return {
+          success: true,
+          alreadyProcessed: true,
+          orderId,
+          newBalance: currentBalance,
+          newHashrateGHs: currentHashrateGHs,
+          newHashrateTHs: currentHashrateTHs,
+          message: `Order ${orderId} was already processed.`,
+        };
+      }
+
+      if (currentBalance < plan.priceUSD) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          `Insufficient USDT balance ($${currentBalance.toFixed(2)} available, $${plan.priceUSD.toFixed(2)} required).`
+        );
+      }
+
+      const newBalance = round8(currentBalance - plan.priceUSD);
+      const newHashrateGHs = Number((currentHashrateGHs + plan.hashrateGHs).toFixed(4));
+      const newHashrateTHs = Number((currentHashrateTHs + plan.hashrateTHs).toFixed(6));
+      const nowIso = new Date().toISOString();
+      const expiresIso = new Date(Date.now() + plan.durationDays * 86400 * 1000).toISOString();
+      const sessionId = sessionData.lastSessionId || `sess_${Date.now()}`;
+
+      transaction.set(
+        walletRef,
+        {
+          symbol: 'USDT',
+          balance: newBalance,
+          lockedBalance: currentLocked,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      transaction.set(contractRef, {
+        id: orderId,
+        orderId,
+        userId,
+        planId: plan.id,
+        planName: plan.name,
+        tier: plan.tier,
+        algorithm: plan.algorithm,
+        targetCoin: plan.targetCoin,
+        hashrate: plan.hashrate,
+        hashrateUnit: plan.hashrateUnit,
+        hashrateGHs: plan.hashrateGHs,
+        hashrateTHs: plan.hashrateTHs,
+        priceUSD: plan.priceUSD,
+        asset: 'USDT',
+        durationDays: plan.durationDays,
+        displayedReturnPercent: plan.displayedReturnPercent,
+        estimatedDailyYieldCoin: plan.estimatedDailyYieldCoin,
+        estimatedDailyYieldUSD: plan.estimatedDailyYieldUSD,
+        powerConsumptionW: plan.powerConsumptionW,
+        maintenanceFeePercent: plan.maintenanceFeePercent,
+        status: 'ACTIVE',
+        purchasedAt: nowIso,
+        expiresAt: expiresIso,
+        settlementId,
+        txId: orderId,
+        sessionId,
+        idempotencyKey: rawKey,
+        isSimulated: true,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(txRef, {
+        id: orderId,
+        orderId,
+        contractId: orderId,
+        planId: plan.id,
+        planName: plan.name,
+        userId,
+        type: 'CONTRACT_PURCHASE',
+        asset: 'USDT',
+        amount: plan.priceUSD,
+        amountUSD: plan.priceUSD,
+        fee: 0,
+        status: 'COMPLETED',
+        settlementStatus: 'PURCHASED',
+        settlementId,
+        walletSettled: true,
+        walletCredited: false,
+        idempotencyKey: rawKey,
+        previousBalance: currentBalance,
+        newBalance,
+        timestamp: nowIso,
+        note: `Cloud Hashrate Contract Purchase: ${plan.name} (+${plan.hashrate} ${plan.hashrateUnit})`,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(settlementRef, {
+        id: settlementId,
+        txId: orderId,
+        orderId,
+        contractId: orderId,
+        userId,
+        type: 'CONTRACT_PURCHASE',
+        action: 'PURCHASE_CONTRACT',
+        asset: 'USDT',
+        amount: plan.priceUSD,
+        planId: plan.id,
+        planName: plan.name,
+        hashrateAddedGHs: plan.hashrateGHs,
+        hashrateAddedTHs: plan.hashrateTHs,
+        previousBalance: currentBalance,
+        newBalance,
+        previousHashrateGHs: currentHashrateGHs,
+        newHashrateGHs,
+        previousHashrateTHs: currentHashrateTHs,
+        newHashrateTHs,
+        settledAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(
+        sessionRef,
+        {
+          userId,
+          status: 'ACTIVE',
+          algorithm: 'SHA-256 (BTC)',
+          targetCoin: 'BTC',
+          hashrateGHs: newHashrateGHs,
+          hashrateTHs: newHashrateTHs,
+          planId: plan.id,
+          activeContractId: orderId,
+          activeContractName: plan.name,
+          lastSessionId: sessionId,
+          isSimulated: true,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      return {
+        success: true,
+        alreadyProcessed: false,
+        orderId,
+        newBalance,
+        newHashrateGHs,
+        newHashrateTHs,
+        message: `${plan.name} purchased and activated.`,
+      };
+    });
+  }
+);
+

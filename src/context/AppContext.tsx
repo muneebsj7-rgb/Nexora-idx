@@ -1,12 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { UserProfile, CryptoMarket, MiningSession, WalletAsset, Transaction, DailyReward, EarnTask, DailyStreakRecord, MarketConnectionStatus } from '../types';
+import { UserProfile, CryptoMarket, MiningSession, MiningContract, WalletAsset, Transaction, DailyReward, EarnTask, DailyStreakRecord, MarketConnectionStatus } from '../types';
 import { AuthService } from '../services/authService';
 import { fetchLiveMarketTickers, subscribeMarketTickersWebSocket, SUPPORTED_BINANCE_PAIRS } from '../services/marketService';
-import { INITIAL_MINING_SESSION, MiningFirestoreService } from '../services/miningService';
+import { INITIAL_MINING_SESSION, MINING_PLANS, MiningFirestoreService } from '../services/miningService';
 import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService } from '../services/walletService';
 import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS, DailyRewardsFirestoreService } from '../services/earnService';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../services/firebase';
 import confetti from 'canvas-confetti';
 
 export type NavTab = 'home' | 'mining' | 'markets' | 'wallet' | 'earn' | 'profile';
@@ -22,6 +20,7 @@ export interface ToastMessage {
 const LOGGED_OUT_MINING_SESSION: MiningSession = {
   ...INITIAL_MINING_SESSION,
   status: 'IDLE',
+  hashrateGHs: 0,
   hashrateTHs: 0,
   uptimeSeconds: 0,
   startedAt: null,
@@ -30,6 +29,9 @@ const LOGGED_OUT_MINING_SESSION: MiningSession = {
   confirmedRewardCoin: 0,
   acceptedShares: 0,
   rejectedShares: 0,
+  planId: undefined,
+  activeContractId: undefined,
+  activeContractName: undefined,
   isSimulated: true,
 };
 
@@ -47,6 +49,8 @@ interface AppContextType {
   lastMarketUpdate: Date;
   refreshMarkets: () => Promise<void>;
   miningSession: MiningSession;
+  userContracts: MiningContract[];
+  isOfflineCache: boolean;
   toggleMining: () => Promise<void>;
   setHardwareProfile: (profile: 'Eco' | 'Balanced' | 'Turbo Overclock') => Promise<void>;
   walletAssets: WalletAsset[];
@@ -59,7 +63,7 @@ interface AppContextType {
   submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => Promise<{ success: boolean; message: string }>;
   submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => Promise<{ success: boolean; message: string }>;
   refreshWalletState: () => Promise<void>;
-  submitPlanOrder: (planName: string, priceUSD: number) => { success: boolean; message: string };
+  submitPlanOrder: (planIdOrName: string, idempotencyKey?: string) => Promise<{ success: boolean; message: string; contract?: MiningContract }>;
   toasts: ToastMessage[];
   addToast: (title: string, message: string, type?: ToastMessage['type']) => void;
   removeToast: (id: string) => void;
@@ -91,6 +95,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [lastMarketUpdate, setLastMarketUpdate] = useState<Date>(new Date());
   
   const [miningSession, setMiningSession] = useState<MiningSession>(LOGGED_OUT_MINING_SESSION);
+  const [userContracts, setUserContracts] = useState<MiningContract[]>([]);
+  const [isOfflineCache, setIsOfflineCache] = useState<boolean>(false);
   const [walletAssets, setWalletAssets] = useState<WalletAsset[]>(
     INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 }))
   );
@@ -110,7 +116,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Authentication State Listener
   useEffect(() => {
     const unsubscribe = AuthService.onAuthStateChanged((authUser) => {
-      setUser(authUser);
+      setUser((prevUser) => {
+        // If user logged out or switched accounts (UID changed), immediately wipe user-scoped state
+        if (prevUser?.id !== authUser?.id) {
+          setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+          setTransactions([]);
+          setMiningSession(LOGGED_OUT_MINING_SESSION);
+          setUserContracts([]);
+          setDailyStreakRecord(null);
+          setIsOfflineCache(false);
+        }
+        return authUser;
+      });
     });
     return () => {
       unsubscribe();
@@ -141,20 +158,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
   }, [user?.id, user?.isEmailVerified, user?.twoFactorEnabled, user?.isDemo]);
 
-  // Real-time Firestore sync for Wallet Balances, Transactions, Mining Session & Daily Streak
+  // Real-time Firestore sync for Wallet Balances, Transactions, Mining Session, Contracts & Daily Streak
   useEffect(() => {
     if (user && !user.isDemo) {
       // Baseline for real authenticated accounts: 0.00 until funded and confirmed
       setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
       setTransactions([]);
       setMiningSession(LOGGED_OUT_MINING_SESSION);
+      setUserContracts([]);
       setDailyRewards(DailyRewardsFirestoreService.computeDailyRewardsState(null));
       setDailyStreakRecord(null);
+      setIsOfflineCache(false);
 
       // 1. Subscribe to users/{uid}/wallet subcollection (Read-only on client)
       const unsubWallet = WalletFirestoreService.subscribeUserWallet(
         user.id,
-        (balances) => {
+        (balances, meta) => {
+          if (meta) setIsOfflineCache(Boolean(meta.fromCache));
           setWalletAssets((prev) =>
             prev.map((asset) => {
               const rec = balances[asset.symbol];
@@ -177,7 +197,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // 2. Subscribe to users/{uid}/transactions subcollection
       const unsubTx = WalletFirestoreService.subscribeUserTransactions(
         user.id,
-        (realTxs) => {
+        (realTxs, meta) => {
+          if (meta && !meta.fromCache) setIsOfflineCache(false);
           setTransactions(realTxs);
         },
         (err) => {
@@ -188,7 +209,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // 3. Subscribe to users/{uid}/mining/session document
       const unsubMining = MiningFirestoreService.subscribeUserMiningSession(
         user.id,
-        (session) => {
+        (session, meta) => {
+          if (meta && meta.fromCache) setIsOfflineCache(true);
           setMiningSession(session);
         },
         (err) => {
@@ -196,7 +218,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       );
 
-      // 4. Subscribe to users/{uid}/rewards/dailyStreak document
+      // 4. Subscribe to users/{uid}/contracts subcollection (Server-written only)
+      const unsubContracts = MiningFirestoreService.subscribeUserContracts(
+        user.id,
+        (contracts) => {
+          setUserContracts(contracts);
+        },
+        (err) => {
+          console.warn('Firestore mining contracts listener notice:', err.message);
+        }
+      );
+
+      // 5. Subscribe to users/{uid}/rewards/dailyStreak document
       const unsubStreak = DailyRewardsFirestoreService.subscribeDailyStreak(
         user.id,
         (record) => {
@@ -212,22 +245,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         unsubWallet();
         unsubTx();
         unsubMining();
+        unsubContracts();
         unsubStreak();
       };
     } else if (user && user.isDemo) {
       // Explicit Demo / sandbox session: load initial simulated demo assets, transactions, mining session & rewards
+      const demoNow = new Date();
+      const demoPurchaseIso = new Date(demoNow.getTime() - 12 * 86400 * 1000).toISOString();
+      const demoExpireIso = new Date(demoNow.getTime() + 100 * 86400 * 1000).toISOString();
       setWalletAssets(INITIAL_WALLET_ASSETS);
       setTransactions(INITIAL_TRANSACTIONS);
       setMiningSession(INITIAL_MINING_SESSION);
+      setUserContracts([
+        {
+          id: 'order_demo_stratum_01',
+          orderId: 'order_demo_stratum_01',
+          userId: user.id,
+          planId: 'plan_stratum_yard',
+          planName: 'Stratum Yard',
+          tier: 'Value',
+          algorithm: 'SHA-256',
+          targetCoin: 'BTC',
+          hashrate: 34,
+          hashrateUnit: 'GH/s',
+          hashrateGHs: 34,
+          hashrateTHs: 0.034,
+          priceUSD: 135.0,
+          asset: 'USDT',
+          durationDays: 112,
+          displayedReturnPercent: 172.0,
+          estimatedDailyYieldCoin: 0.000022,
+          estimatedDailyYieldUSD: 2.07,
+          powerConsumptionW: 544,
+          maintenanceFeePercent: 4.5,
+          status: 'ACTIVE',
+          purchasedAt: demoPurchaseIso,
+          expiresAt: demoExpireIso,
+          settlementId: 'settle_order_demo_stratum_01',
+          txId: 'order_demo_stratum_01',
+          sessionId: INITIAL_MINING_SESSION.id,
+          isSimulated: true,
+        },
+      ]);
       setDailyRewards(INITIAL_DAILY_REWARDS);
       setDailyStreakRecord(null);
+      setIsOfflineCache(false);
     } else {
       // Logged-out visitor: zeroed balances, empty transactions, idle session
       setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
       setTransactions([]);
       setMiningSession(LOGGED_OUT_MINING_SESSION);
+      setUserContracts([]);
       setDailyRewards(INITIAL_DAILY_REWARDS.map((r, idx) => ({ ...r, isClaimed: false, isToday: idx === 0 })));
       setDailyStreakRecord(null);
+      setIsOfflineCache(false);
       setEarnTasks(INITIAL_EARN_TASKS.map((t) => ({ ...t, status: t.id === 'task_mine_24h' ? 'IN_PROGRESS' : 'AVAILABLE' })));
     }
   }, [user?.id, user?.isDemo]);
@@ -406,17 +477,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const timer = setInterval(() => {
       setMiningSession((prev) => {
         const deltaSeconds = 2;
-        const rewardPerSec = 0.000162 / 86400;
+        const activeGHs =
+          typeof prev.hashrateGHs === 'number' && prev.hashrateGHs > 0
+            ? prev.hashrateGHs
+            : prev.hashrateTHs > 0
+            ? prev.hashrateTHs * 1000
+            : 0;
+        const dailyCoinEstimate = activeGHs > 0 ? activeGHs * 0.00000065 : 0;
+        const rewardPerSec = dailyCoinEstimate / 86400;
         const newEstimated = prev.todayEstimatedRewardCoin + rewardPerSec * deltaSeconds;
-        const currentBtcPrice = markets.find(m => m.symbol === 'BTC')?.price || 94250;
-        
+        const currentBtcPrice = markets.find((m) => m.symbol === 'BTC')?.price || 94250;
+
         return {
           ...prev,
           uptimeSeconds: prev.uptimeSeconds + deltaSeconds,
           todayEstimatedRewardCoin: Number(newEstimated.toFixed(8)),
           todayEstimatedRewardUSD: Number((newEstimated * currentBtcPrice).toFixed(2)),
-          acceptedShares: prev.acceptedShares + (Math.random() > 0.6 ? 1 : 0),
-          temperatureC: Number((58.0 + (Math.random() * 1.5)).toFixed(1)),
+          acceptedShares: prev.acceptedShares + (activeGHs > 0 && Math.random() > 0.6 ? 1 : 0),
+          temperatureC: Number((58.0 + Math.random() * 1.5).toFixed(1)),
         };
       });
     }, 2000);
@@ -469,22 +547,34 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
+    let multiplier = 1.0;
+    let power = 16.0;
+    if (profile === 'Eco') {
+      multiplier = 0.85;
+      power = 13.8;
+    } else if (profile === 'Turbo Overclock') {
+      multiplier = 1.25;
+      power = 19.5;
+    }
+
+    const baseGHs =
+      userContracts
+        .filter((c) => c.status === 'ACTIVE')
+        .reduce((sum, c) => sum + (c.hashrateGHs || c.hashrate || 0), 0) ||
+      miningSession.hashrateGHs ||
+      (miningSession.hashrateTHs > 0 ? miningSession.hashrateTHs * 1000 : 10);
+
+    const newHashrateGHs = Number((baseGHs * multiplier).toFixed(2));
+    const newHashrateTHs = Number((newHashrateGHs / 1000).toFixed(6));
+
     if (!user.isDemo) {
       try {
         await MiningFirestoreService.updateHardwareProfile(user.id, profile, miningSession);
-        let multiplier = 1.0;
-        let power = 16.2;
-        if (profile === 'Eco') {
-          multiplier = 0.85;
-          power = 13.8;
-        } else if (profile === 'Turbo Overclock') {
-          multiplier = 1.25;
-          power = 19.5;
-        }
         setMiningSession((prev) => ({
           ...prev,
           hardwareProfile: profile,
-          hashrateTHs: Number((124.8 * multiplier).toFixed(1)),
+          hashrateGHs: newHashrateGHs,
+          hashrateTHs: newHashrateTHs,
           efficiencyWTH: power,
         }));
         addToast('Hardware Profile Applied', `Switched mode to ${profile}. Synced to Firestore.`, 'info');
@@ -492,20 +582,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addToast('Profile Update Error', err?.message || 'Failed to update tuning profile.', 'error');
       }
     } else {
-      let multiplier = 1.0;
-      let power = 16.2;
-      if (profile === 'Eco') {
-        multiplier = 0.85;
-        power = 13.8;
-      } else if (profile === 'Turbo Overclock') {
-        multiplier = 1.25;
-        power = 19.5;
-      }
-
       setMiningSession((prev) => ({
         ...prev,
         hardwareProfile: profile,
-        hashrateTHs: Number((124.8 * multiplier).toFixed(1)),
+        hashrateGHs: newHashrateGHs,
+        hashrateTHs: newHashrateTHs,
         efficiencyWTH: power,
       }));
       addToast('Hardware Profile Applied', `[DEMO] Switched mode to ${profile}.`, 'info');
@@ -882,7 +963,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const submitPlanOrder = (planName: string, priceUSD: number) => {
+  const submitPlanOrder = async (
+    planIdOrName: string,
+    idempotencyKey?: string
+  ): Promise<{ success: boolean; message: string; contract?: MiningContract }> => {
     if (!user) {
       openAuthModal('login');
       return {
@@ -891,47 +975,192 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
     }
 
-    // 1. Financial Security: Real authenticated accounts cannot make client-side balance changes or fake payouts.
-    // Cloud contract order processing requires trusted server-side order and payment settlement.
-    if (!user.isDemo) {
+    const plan = MINING_PLANS.find((p) => p.id === planIdOrName || p.name === planIdOrName);
+    if (!plan) {
       return {
         success: false,
-        message: 'Cloud contract purchase for authenticated accounts is disabled until trusted server-side order processing is implemented. Direct client balance changes and hashrate upgrades are blocked for security.',
+        message: `Unsupported cloud mining contract '${planIdOrName}'.`,
       };
+    }
+
+    // 1. Authenticated Firebase account: Execute atomic server-side order & USDT settlement
+    if (!user.isDemo) {
+      const orderKey =
+        idempotencyKey && idempotencyKey.trim().length >= 6
+          ? idempotencyKey.trim()
+          : `${user.id.slice(0, 8)}_${plan.id}_${Date.now()}`;
+
+      try {
+        const res = await MiningFirestoreService.purchaseContract(plan.id, orderKey);
+
+        // Immediately reflect server-confirmed balance, contract, transaction, and hashrate
+        setWalletAssets((prev) =>
+          prev.map((a) => (a.symbol === 'USDT' ? { ...a, balance: res.newBalance } : a))
+        );
+
+        if (res.contract) {
+          setUserContracts((prev) => {
+            const filtered = prev.filter((c) => c.id !== res.contract.id);
+            return [res.contract, ...filtered];
+          });
+        }
+
+        if (res.transaction) {
+          setTransactions((prev) => {
+            if (prev.some((t) => t.id === res.transaction.id)) return prev;
+            return [{ ...res.transaction, isDemo: false }, ...prev];
+          });
+        }
+
+        setMiningSession((prev) => ({
+          ...prev,
+          status: 'ACTIVE',
+          planId: plan.id,
+          activeContractId: res.contract?.id || prev.activeContractId,
+          activeContractName: plan.name,
+          hashrateGHs: res.newHashrateGHs,
+          hashrateTHs: res.newHashrateTHs,
+          startedAt: prev.startedAt || new Date().toISOString(),
+        }));
+
+        try {
+          confetti({
+            particleCount: 55,
+            spread: 60,
+            origin: { y: 0.7 },
+            colors: ['#00D6A3', '#25B9F3', '#F3B64B'],
+          });
+        } catch {
+          // ignore
+        }
+
+        addToast(
+          res.alreadyProcessed ? 'Order Already Settled' : 'Contract Activated!',
+          res.message,
+          res.alreadyProcessed ? 'info' : 'success'
+        );
+
+        return {
+          success: true,
+          message: res.message,
+          contract: res.contract,
+        };
+      } catch (err: any) {
+        const errMsg = err?.message || 'Could not complete cloud mining contract purchase.';
+        return {
+          success: false,
+          message: errMsg,
+        };
+      }
     }
 
     // 2. Demo Sandbox simulation mode
     const usdt = walletAssets.find((a) => a.symbol === 'USDT');
-    if (!usdt || usdt.balance < priceUSD) {
-      return { success: false, message: `Insufficient USDT balance ($${priceUSD} required). Please deposit USDT first.` };
+    if (!usdt || usdt.balance < plan.priceUSD) {
+      return {
+        success: false,
+        message: `Insufficient USDT balance ($${plan.priceUSD.toFixed(2)} required). Please deposit USDT first.`,
+      };
+    }
+
+    const demoOrderId =
+      idempotencyKey && idempotencyKey.trim().length >= 6
+        ? `order_${idempotencyKey.trim()}`
+        : 'order_demo_' + Date.now().toString().slice(-6);
+
+    const existingDemoContract = userContracts.find((c) => c.id === demoOrderId || c.orderId === demoOrderId);
+    if (existingDemoContract) {
+      return {
+        success: true,
+        message: `[DEMO] Order ${demoOrderId} for ${plan.name} was already settled.`,
+        contract: existingDemoContract,
+      };
     }
 
     setWalletAssets((prev) =>
-      prev.map((a) => (a.symbol === 'USDT' ? { ...a, balance: Number((a.balance - priceUSD).toFixed(2)) } : a))
+      prev.map((a) =>
+        a.symbol === 'USDT' ? { ...a, balance: Number((a.balance - plan.priceUSD).toFixed(2)) } : a
+      )
     );
 
-    // Boost simulated hashrate
-    setMiningSession((prev) => ({
-      ...prev,
-      hashrateTHs: Number((prev.hashrateTHs + 50).toFixed(1)),
-    }));
+    const nowIso = new Date().toISOString();
+    setMiningSession((prev) => {
+      const prevGHs =
+        typeof prev.hashrateGHs === 'number' ? prev.hashrateGHs : prev.hashrateTHs * 1000;
+      const nextGHs = Number((prevGHs + plan.hashrateGHs).toFixed(2));
+      const nextTHs = Number((nextGHs / 1000).toFixed(6));
+      return {
+        ...prev,
+        status: 'ACTIVE',
+        planId: plan.id,
+        activeContractId: demoOrderId,
+        activeContractName: plan.name,
+        hashrateGHs: nextGHs,
+        hashrateTHs: nextTHs,
+        startedAt: prev.startedAt || nowIso,
+      };
+    });
+
+    const demoContract: MiningContract = {
+      id: demoOrderId,
+      orderId: demoOrderId,
+      userId: user.id,
+      planId: plan.id,
+      planName: plan.name,
+      tier: plan.tier,
+      algorithm: plan.algorithm,
+      targetCoin: plan.targetCoin,
+      hashrate: plan.hashrate,
+      hashrateUnit: plan.hashrateUnit,
+      hashrateGHs: plan.hashrateGHs,
+      hashrateTHs: plan.hashrateTHs,
+      priceUSD: plan.priceUSD,
+      asset: 'USDT',
+      durationDays: plan.durationDays,
+      displayedReturnPercent: plan.displayedReturnPercent,
+      estimatedDailyYieldCoin: plan.estimatedDailyYieldCoin,
+      estimatedDailyYieldUSD: plan.estimatedDailyYieldUSD,
+      powerConsumptionW: plan.powerConsumptionW,
+      maintenanceFeePercent: plan.maintenanceFeePercent,
+      status: 'ACTIVE',
+      purchasedAt: nowIso,
+      expiresAt: new Date(Date.now() + plan.durationDays * 86400 * 1000).toISOString(),
+      settlementId: `settle_${demoOrderId}`,
+      txId: demoOrderId,
+      sessionId: miningSession.id,
+      isSimulated: true,
+    };
+    setUserContracts((prev) => [demoContract, ...prev]);
 
     const demoTx: Transaction = {
-      id: 'tx-demo-' + Date.now().toString().slice(-5),
-      type: 'TASK_REWARD',
+      id: demoOrderId,
+      orderId: demoOrderId,
+      contractId: demoOrderId,
+      planId: plan.id,
+      planName: plan.name,
+      type: 'CONTRACT_PURCHASE',
       asset: 'USDT',
-      amount: priceUSD,
-      amountUSD: priceUSD,
+      amount: plan.priceUSD,
+      amountUSD: plan.priceUSD,
       fee: 0,
       status: 'COMPLETED',
-      timestamp: new Date().toISOString(),
-      note: `[DEMO] Hashrate Contract Allocation: ${planName}`,
+      settlementStatus: 'PURCHASED',
+      timestamp: nowIso,
+      note: `[DEMO] Cloud Hashrate Contract Purchase: ${plan.name} (+${plan.hashrate} ${plan.hashrateUnit})`,
       isDemo: true,
     };
     setTransactions((prev) => [demoTx, ...prev]);
 
-    addToast('Demo Plan Activated!', `[DEMO] Allocated simulated hashpower for ${planName}.`, 'success');
-    return { success: true, message: '[DEMO] Cloud hashrate plan activated in sandbox mode!' };
+    addToast(
+      'Demo Plan Activated!',
+      `[DEMO] Allocated +${plan.hashrate} ${plan.hashrateUnit} simulated hashpower for ${plan.name}.`,
+      'success'
+    );
+    return {
+      success: true,
+      message: `[DEMO] ${plan.name} activated in sandbox mode!`,
+      contract: demoContract,
+    };
   };
 
   const loginUser = async (email: string, pass: string) => {
@@ -973,6 +1202,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const logoutUser = async () => {
     await AuthService.logout();
     setUser(null);
+    setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+    setTransactions([]);
+    setMiningSession(LOGGED_OUT_MINING_SESSION);
+    setUserContracts([]);
+    setDailyStreakRecord(null);
+    setIsOfflineCache(false);
     setActiveTab('home');
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
   };
@@ -985,6 +1220,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         DailyRewardsFirestoreService.fetchDailyStreak(user.id).catch(() => null),
       ]);
       if (balances) {
+        const anyCached = Object.values(balances).some((b) => b.isFromCache);
+        setIsOfflineCache(anyCached);
         setWalletAssets((prev) =>
           prev.map((asset) => {
             const rec = balances[asset.symbol];
@@ -1023,6 +1260,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         lastMarketUpdate,
         refreshMarkets,
         miningSession,
+        userContracts,
+        isOfflineCache,
         toggleMining,
         setHardwareProfile,
         walletAssets,

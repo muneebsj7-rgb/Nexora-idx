@@ -50,12 +50,15 @@ export interface CryptoMarket {
 }
 
 export type MiningStatus = 'IDLE' | 'ACTIVE' | 'MAINTENANCE' | 'PAUSED';
+export type MiningPlanTier = 'Entry' | 'Core' | 'Value' | 'Pro' | 'Elite' | 'Starter' | 'Enterprise' | 'Custom';
+export type ContractStatus = 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
 
 export interface MiningSession {
   id: string;
   algorithm: 'SHA-256 (BTC)' | 'Ethash (ETC)' | 'Scrypt (LTC/DOGE)';
   targetCoin: 'BTC' | 'ETC' | 'LTC';
   hashrateTHs: number;
+  hashrateGHs?: number;
   efficiencyWTH: number;
   temperatureC: number;
   uptimeSeconds: number;
@@ -70,6 +73,8 @@ export interface MiningSession {
   hardwareProfile: 'Eco' | 'Balanced' | 'Turbo Overclock';
   userId?: string;
   planId?: string;
+  activeContractId?: string;
+  activeContractName?: string;
   lastSessionId?: string;
   updatedAt?: string;
   isSimulated?: boolean;
@@ -78,18 +83,52 @@ export interface MiningSession {
 export interface MiningPlan {
   id: string;
   name: string;
-  tier: 'Starter' | 'Pro' | 'Enterprise' | 'Custom';
+  tier: MiningPlanTier;
   algorithm: string;
   targetCoin: 'BTC' | 'ETC' | 'LTC';
   hashrate: number;
   hashrateUnit: 'TH/s' | 'GH/s' | 'MH/s';
+  hashrateGHs: number;
+  hashrateTHs: number;
   priceUSD: number;
   durationDays: number;
+  displayedReturnPercent: number;
   estimatedDailyYieldCoin: number;
   estimatedDailyYieldUSD: number;
   powerConsumptionW: number;
   maintenanceFeePercent: number;
   popular?: boolean;
+}
+
+export interface MiningContract {
+  id: string;
+  orderId: string;
+  userId: string;
+  planId: string;
+  planName: string;
+  tier: MiningPlanTier;
+  algorithm: string;
+  targetCoin: 'BTC' | 'ETC' | 'LTC';
+  hashrate: number;
+  hashrateUnit: 'TH/s' | 'GH/s' | 'MH/s';
+  hashrateGHs?: number;
+  hashrateTHs: number;
+  priceUSD: number;
+  asset: 'USDT';
+  durationDays: number;
+  displayedReturnPercent?: number;
+  estimatedDailyYieldCoin: number;
+  estimatedDailyYieldUSD: number;
+  powerConsumptionW: number;
+  maintenanceFeePercent: number;
+  status: ContractStatus;
+  purchasedAt: string;
+  expiresAt: string;
+  settlementId: string;
+  txId: string;
+  sessionId?: string;
+  idempotencyKey?: string;
+  isSimulated: boolean;
 }
 
 export interface WalletAsset {
@@ -106,7 +145,7 @@ export interface WalletAsset {
   withdrawFee: number;
 }
 
-export type TransactionType = 'DEPOSIT' | 'WITHDRAWAL' | 'MINING_PAYOUT' | 'REFERRAL_BONUS' | 'TASK_REWARD';
+export type TransactionType = 'DEPOSIT' | 'WITHDRAWAL' | 'MINING_PAYOUT' | 'REFERRAL_BONUS' | 'TASK_REWARD' | 'CONTRACT_PURCHASE';
 export type TransactionStatus = 'COMPLETED' | 'PENDING_CONFIRMATION' | 'PENDING_REVIEW' | 'PROCESSING' | 'FAILED' | 'REJECTED';
 
 export interface Transaction {
@@ -139,7 +178,7 @@ export interface Transaction {
   refunded?: boolean;
   refundedAt?: string;
   settlementId?: string;
-  settlementStatus?: 'CREDITED' | 'PAID' | 'REFUNDED' | 'REJECTED';
+  settlementStatus?: 'CREDITED' | 'PAID' | 'REFUNDED' | 'REJECTED' | 'PURCHASED';
   rejectedBy?: string;
   rejectedByUid?: string;
   rejectedAt?: string;
@@ -150,6 +189,11 @@ export interface Transaction {
   taskId?: string;
   rewardSource?: 'DAILY_STREAK' | 'TASK_BOUNTY';
   metadataBackfilledFrom?: string;
+  planId?: string;
+  planName?: string;
+  contractId?: string;
+  orderId?: string;
+  idempotencyKey?: string;
   updatedAt?: string;
 }
 

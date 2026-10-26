@@ -376,6 +376,7 @@ service cloud.firestore {
             'currentStreak',
             'lastClaimDate',
             'lastClaimTimestamp',
+            'lastClaimTxId',
             'totalClaims',
             'claimStatus',
             'claimHistory',
@@ -405,6 +406,7 @@ service cloud.firestore {
             'currentStreak',
             'lastClaimDate',
             'lastClaimTimestamp',
+            'lastClaimTxId',
             'totalClaims',
             'claimStatus',
             'claimHistory',
@@ -422,6 +424,21 @@ service cloud.firestore {
           ]);
 
         allow delete: if false;
+      }
+
+      /**
+       * Cloud Mining Contracts subcollection: /users/{userId}/contracts/{contractId}
+       *
+       * Security Constraints:
+       * 1. Read: Authenticated owner can read their own purchased cloud mining contracts.
+       * 2. Write: Strictly forbidden from the client SDK (`allow write: if false`).
+       *    All contract purchases and entitlements must be created atomically by the
+       *    trusted backend (`POST /api/mining/purchase-contract` or `purchaseMiningContract`
+       *    Cloud Function) after verifying server-confirmed USDT balance.
+       */
+      match /contracts/{contractId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
       }
     }
 

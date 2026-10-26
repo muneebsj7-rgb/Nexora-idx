@@ -375,7 +375,15 @@ export const HomeScreen: React.FC = () => {
                 <span>Mining Speed</span>
               </div>
               <div className="text-base font-extrabold text-[#F4F7FC] font-mono mt-1 flex items-center gap-1.5">
-                <span>{miningSession.status === 'ACTIVE' ? `${miningSession.hashrateTHs} TH/s` : '0.0 TH/s'}</span>
+                <span>
+                  {miningSession.status === 'ACTIVE'
+                    ? `${
+                        typeof miningSession.hashrateGHs === 'number' && miningSession.hashrateGHs > 0
+                          ? miningSession.hashrateGHs
+                          : Number((miningSession.hashrateTHs * 1000).toFixed(2))
+                      } GH/s`
+                    : '0.0 GH/s'}
+                </span>
                 {miningSession.status === 'ACTIVE' && (
                   <span className="w-1.5 h-1.5 rounded-full bg-[#00D6A3] animate-pulse" />
                 )}

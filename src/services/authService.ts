@@ -18,7 +18,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { UserProfile } from '../types';
-import { auth, db, isFirebaseConfigured } from './firebase';
+import { auth, db, isFirebaseConfigured, isExpectedOfflineError, sanitizeDiagnosticMessage } from './firebase';
 
 const STORAGE_KEY_USER = 'nexora_user_session';
 
@@ -43,18 +43,6 @@ export const DEFAULT_DEMO_USER: UserProfile = {
   isDemo: true,
   authProvider: 'demo',
 };
-
-function isFirestoreOfflineError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = 'code' in error ? String((error as { code?: unknown }).code).toLowerCase() : '';
-  const msg = 'message' in error ? String((error as { message?: unknown }).message).toLowerCase() : '';
-  return (
-    code === 'unavailable' ||
-    msg.includes('client is offline') ||
-    msg.includes('offline') ||
-    msg.includes('could not reach cloud firestore backend')
-  );
-}
 
 function formatFirebaseError(error: unknown): Error {
   if (typeof error === 'object' && error !== null && 'code' in error) {
@@ -85,12 +73,12 @@ function formatFirebaseError(error: unknown): Error {
         return new Error('Cloud Firestore service is temporarily unavailable. Please retry in a moment.');
       default:
         if ('message' in error && typeof error.message === 'string') {
-          return new Error(error.message);
+          return new Error(sanitizeDiagnosticMessage(error.message));
         }
     }
   }
   if (error instanceof Error) {
-    return error;
+    return new Error(sanitizeDiagnosticMessage(error.message));
   }
   return new Error('An unexpected authentication error occurred.');
 }
@@ -108,13 +96,23 @@ export class AuthService {
 
   /**
    * Initializes session from localStorage if available.
+   * Security note: Cached non-demo profiles in localStorage are never trusted for `isAdmin`
+   * or `isEmailVerified` elevation and are reconciled against live Firebase Auth state.
    */
   static initialize(): UserProfile | null {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_USER);
       if (saved) {
-        this.currentUser = JSON.parse(saved);
-        return this.currentUser;
+        const parsed = JSON.parse(saved) as UserProfile;
+        if (parsed && typeof parsed.id === 'string') {
+          // Never trust a cached isAdmin flag from localStorage
+          const sanitized: UserProfile = {
+            ...parsed,
+            isAdmin: false,
+          };
+          this.currentUser = sanitized;
+          return this.currentUser;
+        }
       }
     } catch {
       // ignore parse error
@@ -127,10 +125,22 @@ export class AuthService {
   }
 
   /**
+   * Clears any cached user profile state from memory and localStorage.
+   */
+  static clearCachedSession(): void {
+    this.currentUser = null;
+    try {
+      localStorage.removeItem(STORAGE_KEY_USER);
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  /**
    * Ensures that the authenticated user has a real document in Cloud Firestore at users/{uid}.
    * If the document does not exist (e.g. initial registration or prior failure), creates it.
    * If Firestore is transiently offline, falls back to local Firestore cache or stored profile
-   * and queues synchronization when online.
+   * ONLY for genuine offline/unavailable errors — never suppressing permission-denied or auth errors.
    */
   static async ensureUserProfileDocument(
     fbUser: FirebaseUser,
@@ -153,18 +163,22 @@ export class AuthService {
     try {
       userDocSnap = await getDoc(userDocRef);
     } catch (readError) {
-      if (isFirestoreOfflineError(readError)) {
+      if (isExpectedOfflineError(readError)) {
         try {
           userDocSnap = await getDocFromCache(userDocRef);
         } catch {
           // Document not yet present in local IndexedDB cache while client is offline.
-          // Preserve any cached profile attributes for this uid or construct from FirebaseUser.
-          const cachedSession = this.currentUser?.id === fbUser.uid ? this.currentUser : null;
+          // Preserve only safe non-privileged attributes if they belong to the exact same UID.
+          const cachedSession =
+            this.currentUser && !this.currentUser.isDemo && this.currentUser.id === fbUser.uid
+              ? this.currentUser
+              : null;
           const offlineProfile: UserProfile = {
             id: fbUser.uid,
             email: fbUser.email || cachedSession?.email || '',
             displayName: cachedSession?.displayName || cleanName,
-            isEmailVerified: fbUser.emailVerified || Boolean(cachedSession?.isEmailVerified),
+            // Authoritative email verification comes strictly from live FirebaseUser token state
+            isEmailVerified: Boolean(fbUser.emailVerified),
             kycTier: cachedSession?.kycTier || 'None',
             createdAt: cachedSession?.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
             avatarUrl: cachedSession?.avatarUrl || fbUser.photoURL || undefined,
@@ -175,11 +189,15 @@ export class AuthService {
             accentTheme: cachedSession?.accentTheme || 'emerald',
             isDemo: false,
             authProvider: 'firebase',
+            isAdmin: false,
           };
           return offlineProfile;
         }
       } else {
-        console.warn(`Firestore read notice for users/${fbUser.uid}:`, readError);
+        console.warn(
+          `Firestore read error for users/${fbUser.uid}:`,
+          sanitizeDiagnosticMessage((readError as any)?.message)
+        );
         throw formatFirebaseError(readError);
       }
     }
@@ -190,7 +208,7 @@ export class AuthService {
         id: fbUser.uid,
         email: fbUser.email || '',
         displayName: cleanName,
-        isEmailVerified: fbUser.emailVerified,
+        isEmailVerified: Boolean(fbUser.emailVerified),
         kycTier: 'None',
         createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
         avatarUrl: fbUser.photoURL || undefined,
@@ -201,6 +219,7 @@ export class AuthService {
         accentTheme: 'emerald',
         isDemo: false,
         authProvider: 'firebase',
+        isAdmin: false,
       };
 
       try {
@@ -221,10 +240,13 @@ export class AuthService {
         });
         return initialProfile;
       } catch (writeError) {
-        if (isFirestoreOfflineError(writeError)) {
+        if (isExpectedOfflineError(writeError)) {
           return initialProfile;
         }
-        console.warn(`Failed to create Firestore profile users/${fbUser.uid}:`, writeError);
+        console.warn(
+          `Failed to create Firestore profile users/${fbUser.uid}:`,
+          sanitizeDiagnosticMessage((writeError as any)?.message)
+        );
         throw formatFirebaseError(writeError);
       }
     }
@@ -244,15 +266,20 @@ export class AuthService {
         );
         firestoreData.isEmailVerified = true;
       } catch (syncErr) {
-        console.warn('Could not sync verified email status to Firestore:', syncErr);
+        console.warn(
+          'Could not sync verified email status to Firestore:',
+          sanitizeDiagnosticMessage((syncErr as any)?.message)
+        );
       }
     }
 
+    // Security invariant: `isEmailVerified` is governed by live Firebase Auth (`fbUser.emailVerified`),
+    // never elevated by a stale cached document, and `isAdmin` is never granted from Firestore profile docs.
     const hydratedProfile: UserProfile = {
       id: fbUser.uid,
       email: fbUser.email || firestoreData.email || '',
       displayName: firestoreData.displayName || fbUser.displayName || cleanName,
-      isEmailVerified: fbUser.emailVerified || Boolean(firestoreData.isEmailVerified),
+      isEmailVerified: Boolean(fbUser.emailVerified),
       kycTier: firestoreData.kycTier || 'None',
       createdAt: firestoreData.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
       avatarUrl: firestoreData.avatarUrl || fbUser.photoURL || undefined,
@@ -263,6 +290,7 @@ export class AuthService {
       accentTheme: firestoreData.accentTheme || 'emerald',
       isDemo: false,
       authProvider: 'firebase',
+      isAdmin: false,
     };
 
     return hydratedProfile;
@@ -275,13 +303,16 @@ export class AuthService {
     try {
       return await this.ensureUserProfileDocument(fbUser);
     } catch (err) {
-      console.warn('Fallback to in-memory profile representation:', err);
+      console.warn(
+        'Fallback to Firebase Auth token profile representation:',
+        sanitizeDiagnosticMessage((err as any)?.message)
+      );
       const fallbackCode = `NEXO-${fbUser.uid.substring(0, 4).toUpperCase()}`;
       return {
         id: fbUser.uid,
         email: fbUser.email || '',
         displayName: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Miner'),
-        isEmailVerified: fbUser.emailVerified,
+        isEmailVerified: Boolean(fbUser.emailVerified),
         kycTier: 'None',
         createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
         avatarUrl: fbUser.photoURL || undefined,
@@ -291,6 +322,7 @@ export class AuthService {
         accentTheme: 'emerald',
         isDemo: false,
         authProvider: 'firebase',
+        isAdmin: false,
       };
     }
   }
@@ -455,35 +487,58 @@ export class AuthService {
   }
 
   /**
-   * Auth state listener coordinating Firebase Auth and local session
+   * Auth state listener coordinating Firebase Auth and local session.
+   * Security invariant:
+   * - Never allows a cached profile from Account A to remain active when Account B signs in or when signed out.
+   * - Never trusts localStorage for `isAdmin` or `isEmailVerified` without an active FirebaseUser.
    */
   static onAuthStateChanged(callback: (user: UserProfile | null) => void): () => void {
     this.listeners.push(callback);
 
-    // Initial sync
     const initialUser = this.getCurrentUser() || this.initialize();
-    callback(initialUser);
+    if (initialUser?.isDemo) {
+      callback(initialUser);
+    } else if (!isFirebaseConfigured || !auth) {
+      callback(null);
+    } else {
+      // Wait for Firebase Auth state callback to confirm token/session validity before trusting non-demo profile,
+      // or emit a provisional non-privileged profile if auth.currentUser already matches.
+      if (auth.currentUser && initialUser && initialUser.id === auth.currentUser.uid) {
+        callback({
+          ...initialUser,
+          isEmailVerified: Boolean(auth.currentUser.emailVerified),
+          isAdmin: false,
+        });
+      }
+    }
 
     let fbUnsubscribe: (() => void) | null = null;
     if (auth && isFirebaseConfigured) {
       try {
         fbUnsubscribe = onFirebaseAuthStateChanged(auth, async (fbUser) => {
           if (fbUser) {
+            // If switching from another user or demo session, clear previous user's cached session first
+            if (this.currentUser && this.currentUser.id !== fbUser.uid) {
+              this.clearCachedSession();
+            }
             const profile = await this.buildProfileFromFirebase(fbUser);
             this.currentUser = profile;
-            localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(profile));
+            try {
+              localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(profile));
+            } catch {
+              // ignore storage errors
+            }
             callback(profile);
           } else {
-            // Only clear if the active user was a Firebase user (not maintaining a demo session)
-            if (this.currentUser && !this.currentUser.isDemo) {
-              this.currentUser = null;
-              localStorage.removeItem(STORAGE_KEY_USER);
+            // Only clear if the active user was a Firebase user (not maintaining an explicit demo session)
+            if (!this.currentUser || !this.currentUser.isDemo) {
+              this.clearCachedSession();
               callback(null);
             }
           }
         });
       } catch (err) {
-        console.warn('Firebase auth state listener setup note:', err);
+        console.warn('Firebase auth state listener setup note:', sanitizeDiagnosticMessage((err as any)?.message));
       }
     }
 
@@ -500,7 +555,7 @@ export class AuthService {
       try {
         listener(user);
       } catch (err) {
-        console.warn('Auth state listener notice:', err);
+        console.warn('Auth state listener notice:', sanitizeDiagnosticMessage((err as any)?.message));
       }
     });
   }
@@ -569,8 +624,8 @@ export class AuthService {
           { merge: true }
         );
       } catch (error) {
-        if (!isFirestoreOfflineError(error)) {
-          console.warn('Firebase profile update notice:', error);
+        if (!isExpectedOfflineError(error)) {
+          console.warn('Firebase profile update notice:', sanitizeDiagnosticMessage((error as any)?.message));
           throw formatFirebaseError(error);
         }
       }

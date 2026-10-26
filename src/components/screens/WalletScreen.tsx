@@ -25,7 +25,7 @@ import { GradientIcon } from '../ui/GradientIcon';
 import { AdminService, PendingRequestItem, AdminSetupStatus } from '../../services/adminService';
 
 export const WalletScreen: React.FC = () => {
-  const { user, walletAssets, transactions, addToast, openAuthModal, refreshWalletState } = useApp();
+  const { user, walletAssets, transactions, isOfflineCache, addToast, openAuthModal, refreshWalletState } = useApp();
 
   const [depositOpen, setDepositOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -362,6 +362,7 @@ export const WalletScreen: React.FC = () => {
       return tx.type === 'TASK_REWARD' ? 'Pending Verification' : 'Compliance Review';
     }
     if (tx.status === 'COMPLETED') {
+      if (tx.type === 'CONTRACT_PURCHASE') return 'Contract Settled';
       return tx.type === 'WITHDRAWAL' ? 'Paid & Settled' : 'Approved & Credited';
     }
     if (tx.status === 'REJECTED') {
@@ -388,10 +389,17 @@ export const WalletScreen: React.FC = () => {
 
         <div>
           {isRealUser ? (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-              <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse" />
-              Firestore Synced
-            </span>
+            isOfflineCache ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                <span className="w-2 h-2 rounded-full bg-[#F3B64B]" />
+                Offline Cache (Stale View)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
+                <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse" />
+                Firestore Synced
+              </span>
+            )
           ) : (
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30">
               <span className="w-2 h-2 rounded-full bg-[#F3B64B]" />
@@ -1022,6 +1030,7 @@ export const WalletScreen: React.FC = () => {
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     {tx.type === 'MINING_PAYOUT' && <GradientIcon icon={Pickaxe} theme="gold" size="sm" variant="boxed" />}
+                    {tx.type === 'CONTRACT_PURCHASE' && <GradientIcon icon={Pickaxe} theme="emerald" size="sm" variant="boxed" />}
                     {tx.type === 'DEPOSIT' && <GradientIcon icon={ArrowDownLeft} theme="emerald" size="sm" variant="boxed" />}
                     {tx.type === 'WITHDRAWAL' && <GradientIcon icon={ArrowUpRight} theme="rose" size="sm" variant="boxed" />}
                     {tx.type === 'REFERRAL_BONUS' && <GradientIcon icon={Gift} theme="violet" size="sm" variant="boxed" />}

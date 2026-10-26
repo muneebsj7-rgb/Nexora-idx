@@ -9,6 +9,7 @@ import { getAuth } from 'firebase-admin/auth';
 import dotenv from 'dotenv';
 import {
   AUTHORITATIVE_ASSET_CONFIG,
+  AUTHORITATIVE_MINING_PLANS,
   settleDepositApproval,
   settleDepositRejection,
   settleRewardApproval,
@@ -16,6 +17,7 @@ import {
   reserveWithdrawalRequest,
   settleWithdrawalApproval,
   settleWithdrawalRejection,
+  purchaseMiningContract,
 } from './src/services/settlementEngine.ts';
 
 dotenv.config();
@@ -127,9 +129,12 @@ export function setFirestoreProviderForTesting(fn: (() => any) | null) {
   customFirestoreProviderForTesting = fn;
 }
 
+let collectionGroupIndexUnavailable = false;
+
 export function resetServerTestHooks() {
   customTokenVerifierForTesting = null;
   customFirestoreProviderForTesting = null;
+  collectionGroupIndexUnavailable = false;
 }
 
 function hasActiveFirestoreBackend(): boolean {
@@ -289,8 +294,9 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
 
 function mapTransactionDoc(docSnap: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot) {
   const data = docSnap.data() || {};
-  const parentUserPath = docSnap.ref.parent.parent;
-  const inferredUserId = data.userId || parentUserPath?.id || '';
+  const parentUserPath = docSnap.ref?.parent?.parent;
+  const fallbackUid = (docSnap as any)._fallbackUserId;
+  const inferredUserId = data.userId || parentUserPath?.id || fallbackUid || '';
 
   return {
     id: docSnap.id,
@@ -322,6 +328,118 @@ function mapTransactionDoc(docSnap: FirebaseFirestore.QueryDocumentSnapshot | Fi
     metadataBackfilledFrom: data.metadataBackfilledFrom,
     createdAt: data.createdAt,
   };
+}
+
+export function isMissingIndexError(err: any): boolean {
+  if (!err) return false;
+  const code = err.code;
+  const msg = String(err.message || err.details || '');
+  return (
+    code === 9 ||
+    code === 'failed-precondition' ||
+    code === 'FAILED_PRECONDITION' ||
+    msg.includes('FAILED_PRECONDITION') ||
+    msg.includes('requires an index')
+  );
+}
+
+/**
+ * Fallback helper that scans `users/{uid}/transactions` subcollections directly when
+ * a remote `COLLECTION_GROUP` composite index has not yet been deployed on `transactions`.
+ * Single-collection queries on `users/{uid}/transactions` rely only on Firestore's automatic
+ * collection indexes and never fail with `FAILED_PRECONDITION`.
+ */
+async function scanTransactionsViaUserSubcollections(
+  db: any,
+  limitPerUser = 100
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const userIds = new Set<string>();
+  const usersCol = db.collection('users');
+
+  if (usersCol && typeof usersCol.limit === 'function') {
+    const usersSnap = await usersCol.limit(200).get();
+    for (const userDoc of usersSnap?.docs || []) {
+      if (userDoc?.id) userIds.add(userDoc.id);
+    }
+  }
+
+  if (usersCol && typeof usersCol.listDocuments === 'function') {
+    try {
+      const refs = await usersCol.listDocuments();
+      for (const ref of refs || []) {
+        if (ref?.id) userIds.add(ref.id);
+      }
+    } catch {
+      // Ignore if listDocuments is unavailable in test mocks
+    }
+  }
+
+  const allDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  await Promise.all(
+    Array.from(userIds).map(async (uid) => {
+      try {
+        const txCol = db.collection(`users/${uid}/transactions`);
+        const snap =
+          txCol && typeof txCol.limit === 'function'
+            ? await txCol.limit(limitPerUser).get()
+            : await txCol.get();
+        for (const docSnap of snap?.docs || []) {
+          (docSnap as any)._fallbackUserId = uid;
+          allDocs.push(docSnap);
+        }
+      } catch {
+        // Ignore individual user subcollection errors so remaining users still load
+      }
+    })
+  );
+
+  return allDocs;
+}
+
+/**
+ * Executes one or more `(type, status)` queries across user transactions.
+ * Attempts fast `collectionGroup('transactions')` queries first; if Firestore reports
+ * `FAILED_PRECONDITION: The query requires an index`, transparently falls back to
+ * scanning `users/{uid}/transactions` subcollections and filtering in memory.
+ */
+async function queryTransactionsAcrossUsers(
+  db: any,
+  queries: Array<{ type: string; status: string; limit?: number }>
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[][]> {
+  if (!collectionGroupIndexUnavailable) {
+    try {
+      const snaps = await Promise.all(
+        queries.map((q) =>
+          db
+            .collectionGroup('transactions')
+            .where('type', '==', q.type)
+            .where('status', '==', q.status)
+            .limit(q.limit ?? 50)
+            .get()
+        )
+      );
+      return snaps.map((s) => s.docs || []);
+    } catch (err: any) {
+      if (!isMissingIndexError(err)) {
+        throw err;
+      }
+      collectionGroupIndexUnavailable = true;
+      console.warn(
+        'Firestore collectionGroup composite index on transactions is not yet active; falling back to per-user subcollection scan.'
+      );
+    }
+  }
+
+  const allDocs = await scanTransactionsViaUserSubcollections(db, 100);
+  return queries.map((q) => {
+    const cap = q.limit ?? 50;
+    return allDocs
+      .filter((docSnap) => {
+        const d = docSnap.data() || {};
+        return d.type === q.type && d.status === q.status;
+      })
+      .slice(0, cap);
+  });
 }
 
 // -------------------------------------------------------------
@@ -419,6 +537,67 @@ app.post('/api/wallet/withdraw', requireUserAuth, async (req, res) => {
 });
 
 /**
+ * POST /api/mining/purchase-contract
+ * Authenticated user endpoint: Atomically validates the requested `planId` against the
+ * authoritative server-side plan catalogue, verifies server-confirmed USDT available balance,
+ * deducts `plan.priceUSD` once, records the contract in `users/{uid}/contracts/{orderId}`,
+ * records a `CONTRACT_PURCHASE` transaction and settlement record, and increments simulated
+ * cloud hashrate in `users/{uid}/mining/session`.
+ */
+app.post('/api/mining/purchase-contract', requireUserAuth, async (req, res) => {
+  const caller = (req as any).userCaller as AuthenticatedCaller;
+  const { planId, idempotencyKey } = req.body || {};
+
+  const cleanPlanId = String(planId || '').trim();
+  if (!cleanPlanId || !AUTHORITATIVE_MINING_PLANS[cleanPlanId]) {
+    res.status(400).json({
+      success: false,
+      error: `Invalid or unsupported cloud mining plan: ${cleanPlanId || 'MISSING_PLAN_ID'}`,
+    });
+    return;
+  }
+
+  const cleanKey = String(idempotencyKey || '').trim();
+  if (cleanKey.length < 6) {
+    res.status(400).json({
+      success: false,
+      error: 'Missing or invalid idempotencyKey for contract order.',
+    });
+    return;
+  }
+
+  if (!hasActiveFirestoreBackend()) {
+    res.status(503).json({
+      success: false,
+      error: 'Firebase Admin SDK is not initialized on this server instance.',
+      code: 'MISSING_ADMIN_CREDENTIALS',
+    });
+    return;
+  }
+
+  try {
+    const db = getActiveFirestore();
+    const result = await purchaseMiningContract(db as any, {
+      userId: caller.uid,
+      planId: cleanPlanId,
+      idempotencyKey: cleanKey,
+      serverTimestamp: () => FieldValue.serverTimestamp(),
+    });
+
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err: any) {
+    const msg = err?.message || 'Failed to process cloud mining contract purchase.';
+    res.status(400).json({
+      success: false,
+      error: msg,
+    });
+  }
+});
+
+/**
  * GET /api/admin/pending-deposits
  * Lists pending deposits for administrative review
  */
@@ -433,14 +612,11 @@ app.get('/api/admin/pending-deposits', requireAdminAuth, async (_req, res) => {
     }
 
     const db = getActiveFirestore();
-    const txGroupSnap = await db
-      .collectionGroup('transactions')
-      .where('type', '==', 'DEPOSIT')
-      .where('status', '==', 'PENDING_CONFIRMATION')
-      .limit(50)
-      .get();
+    const [depositDocs] = await queryTransactionsAcrossUsers(db, [
+      { type: 'DEPOSIT', status: 'PENDING_CONFIRMATION', limit: 50 },
+    ]);
 
-    const deposits = txGroupSnap.docs.map(mapTransactionDoc);
+    const deposits = depositDocs.map(mapTransactionDoc);
     res.json({ deposits });
   } catch (err: any) {
     console.error('Error listing pending deposits:', err);
@@ -470,31 +646,16 @@ app.get('/api/admin/pending-requests', requireAdminAuth, async (_req, res) => {
     }
 
     const db = getActiveFirestore();
-    const [depositsSnap, rewardsSnap, withdrawalsSnap] = await Promise.all([
-      db
-        .collectionGroup('transactions')
-        .where('type', '==', 'DEPOSIT')
-        .where('status', '==', 'PENDING_CONFIRMATION')
-        .limit(50)
-        .get(),
-      db
-        .collectionGroup('transactions')
-        .where('type', '==', 'TASK_REWARD')
-        .where('status', '==', 'PENDING_REVIEW')
-        .limit(50)
-        .get(),
-      db
-        .collectionGroup('transactions')
-        .where('type', '==', 'WITHDRAWAL')
-        .where('status', '==', 'PENDING_REVIEW')
-        .limit(50)
-        .get(),
+    const [depositDocs, rewardDocs, withdrawalDocs] = await queryTransactionsAcrossUsers(db, [
+      { type: 'DEPOSIT', status: 'PENDING_CONFIRMATION', limit: 50 },
+      { type: 'TASK_REWARD', status: 'PENDING_REVIEW', limit: 50 },
+      { type: 'WITHDRAWAL', status: 'PENDING_REVIEW', limit: 50 },
     ]);
 
     res.json({
-      deposits: depositsSnap.docs.map(mapTransactionDoc),
-      rewards: rewardsSnap.docs.map(mapTransactionDoc),
-      withdrawals: withdrawalsSnap.docs.map(mapTransactionDoc),
+      deposits: depositDocs.map(mapTransactionDoc),
+      rewards: rewardDocs.map(mapTransactionDoc),
+      withdrawals: withdrawalDocs.map(mapTransactionDoc),
     });
   } catch (err: any) {
     console.error('Error listing pending requests:', err);
@@ -829,17 +990,18 @@ app.post('/api/admin/reconcile-settlements', requireAdminAuth, async (req, res) 
       const userTxSnap = await db.collection(`users/${targetUserId}/transactions`).limit(100).get();
       docsToInspect = userTxSnap.docs;
     } else {
-      const [completedDeposits, completedRewards, completedWithdrawals, rejectedWithdrawals] = await Promise.all([
-        db.collectionGroup('transactions').where('type', '==', 'DEPOSIT').where('status', '==', 'COMPLETED').limit(50).get(),
-        db.collectionGroup('transactions').where('type', '==', 'TASK_REWARD').where('status', '==', 'COMPLETED').limit(50).get(),
-        db.collectionGroup('transactions').where('type', '==', 'WITHDRAWAL').where('status', '==', 'COMPLETED').limit(50).get(),
-        db.collectionGroup('transactions').where('type', '==', 'WITHDRAWAL').where('status', '==', 'REJECTED').limit(50).get(),
-      ]);
+      const [completedDeposits, completedRewards, completedWithdrawals, rejectedWithdrawals] =
+        await queryTransactionsAcrossUsers(db, [
+          { type: 'DEPOSIT', status: 'COMPLETED', limit: 50 },
+          { type: 'TASK_REWARD', status: 'COMPLETED', limit: 50 },
+          { type: 'WITHDRAWAL', status: 'COMPLETED', limit: 50 },
+          { type: 'WITHDRAWAL', status: 'REJECTED', limit: 50 },
+        ]);
       docsToInspect = [
-        ...completedDeposits.docs,
-        ...completedRewards.docs,
-        ...completedWithdrawals.docs,
-        ...rejectedWithdrawals.docs,
+        ...completedDeposits,
+        ...completedRewards,
+        ...completedWithdrawals,
+        ...rejectedWithdrawals,
       ];
     }
 

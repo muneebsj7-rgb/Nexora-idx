@@ -9,7 +9,7 @@ import {
   FirestoreError,
 } from 'firebase/firestore';
 import { DailyReward, EarnTask, DailyStreakRecord, DailyStreakClaimItem } from '../types';
-import { db } from './firebase';
+import { db, isExpectedOfflineError, sanitizeDiagnosticMessage } from './firebase';
 
 export const INITIAL_DAILY_REWARDS: DailyReward[] = [
   { day: 1, rewardUSD: 0.50, isClaimed: true, isToday: false },
@@ -94,7 +94,7 @@ function formatRewardError(error: unknown, action: string): Error {
     }
   }
   if (error instanceof Error) {
-    return error;
+    return new Error(sanitizeDiagnosticMessage(error.message));
   }
   return new Error(`An unexpected error occurred during ${action}.`);
 }
@@ -108,15 +108,10 @@ function formatRewardError(error: unknown, action: string): Error {
  *    submitted by the client are NOT authoritative proof of streak continuity or eligibility.
  * 2. Spendable Balance Protection: The client is strictly forbidden from self-crediting wallet balances or
  *    marking claims as 'APPROVED', 'VERIFIED', or 'COMPLETED'. All submissions remain 'PENDING_VERIFICATION'.
- * 3. Duplicate Claim Prevention Limitation: The UTC calendar check performed in the client SDK serves as a basic
- *    UI validation gate. Authoritative, tamper-proof duplicate prevention requires server-side atomic transactions
- *    (e.g., Firebase Cloud Functions with the Firebase Admin SDK). Because trusted server-side verification
- *    has not yet been implemented, claims are stored as pending review requests without spendable funds.
  */
 export class DailyRewardsFirestoreService {
   /**
    * Returns current calendar day in UTC format (YYYY-MM-DD).
-   * Note: Client-provided dates and device clocks are not authoritative.
    */
   static getTodayUTCDate(): string {
     return new Date().toISOString().slice(0, 10);
@@ -145,7 +140,6 @@ export class DailyRewardsFirestoreService {
       const isClaimed = day <= currentStreak;
 
       // Is this day eligible for claiming right now?
-      // Next day to claim is currentStreak + 1 (or day 1 if starting or streak reset)
       let isToday = false;
       if (!hasClaimedToday) {
         if (currentStreak === 0 && day === 1) {
@@ -192,7 +186,7 @@ export class DailyRewardsFirestoreService {
    */
   static subscribeDailyStreak(
     uid: string,
-    onUpdate: (record: DailyStreakRecord | null) => void,
+    onUpdate: (record: DailyStreakRecord | null, meta?: { fromCache: boolean }) => void,
     onError?: (err: Error) => void
   ): () => void {
     if (!db) {
@@ -204,9 +198,11 @@ export class DailyRewardsFirestoreService {
       const streakDocRef = doc(db, 'users', uid, 'rewards', 'dailyStreak');
       return onSnapshot(
         streakDocRef,
+        { includeMetadataChanges: true },
         (snap) => {
+          const fromCache = snap.metadata.fromCache;
           if (!snap.exists()) {
-            onUpdate(null);
+            onUpdate(null, { fromCache });
             return;
           }
           const data = snap.data();
@@ -230,15 +226,18 @@ export class DailyRewardsFirestoreService {
               ? data.updatedAt.toDate().toISOString()
               : data.updatedAt ? String(data.updatedAt) : undefined,
           };
-          onUpdate(record);
+          onUpdate(record, { fromCache });
         },
         (error) => {
-          console.warn(`Firestore daily streak listener note for uid ${uid}:`, error.message);
+          console.warn(
+            `Firestore daily streak listener note for uid ${uid}:`,
+            sanitizeDiagnosticMessage(error.message)
+          );
           onError?.(formatRewardError(error, 'reading daily streak'));
         }
       );
     } catch (err) {
-      console.warn('Error setting up daily streak listener:', err);
+      console.warn('Error setting up daily streak listener:', sanitizeDiagnosticMessage((err as any)?.message));
       onError?.(formatRewardError(err, 'subscribing to daily streak'));
       return () => {};
     }
@@ -246,6 +245,7 @@ export class DailyRewardsFirestoreService {
 
   /**
    * Fetches the user's daily streak record once from Firestore.
+   * Only falls back to `getDocFromCache` when `isExpectedOfflineError(err)` is true.
    */
   static async fetchDailyStreak(uid: string): Promise<DailyStreakRecord | null> {
     if (!db) return null;
@@ -254,7 +254,10 @@ export class DailyRewardsFirestoreService {
       let snap;
       try {
         snap = await getDoc(streakDocRef);
-      } catch {
+      } catch (err) {
+        if (!isExpectedOfflineError(err)) {
+          throw formatRewardError(err, 'fetching daily streak');
+        }
         snap = await getDocFromCache(streakDocRef);
       }
       if (!snap.exists()) return null;
@@ -274,21 +277,16 @@ export class DailyRewardsFirestoreService {
         claimHistory: Array.isArray(data.claimHistory) ? data.claimHistory : [],
       };
     } catch (error) {
-      console.warn(`Firestore daily streak read notice for users/${uid}/rewards/dailyStreak:`, error);
+      console.warn(
+        `Firestore daily streak read notice for users/${uid}/rewards/dailyStreak:`,
+        sanitizeDiagnosticMessage((error as any)?.message)
+      );
       throw formatRewardError(error, 'fetching daily streak');
     }
   }
 
   /**
    * Claims the daily streak reward for an authenticated user.
-   * Security constraints:
-   * 1. Checks that today (UTC) has not already been claimed.
-   * 2. Computes consecutive streak continuity.
-   * 3. Writes users/{uid}/rewards/dailyStreak with status PENDING_VERIFICATION.
-   * 4. Queues a pending transaction in users/{uid}/transactions with status PENDING_REVIEW
-   *    and explicit `rewardDay` (UTC YYYY-MM-DD), `claimDate` (UTC YYYY-MM-DD), `streakDay` (1..7),
-   *    and `rewardSource: 'DAILY_STREAK'`.
-   * 5. Does NOT directly credit wallet balances from the client.
    */
   static async claimDailyReward(
     uid: string,
@@ -324,7 +322,13 @@ export class DailyRewardsFirestoreService {
         if (Array.isArray(data.claimHistory)) existingHistory = data.claimHistory;
       }
     } catch (checkErr) {
-      console.warn('Note: Could not read existing daily streak doc before claim, using local state:', checkErr);
+      if (!isExpectedOfflineError(checkErr)) {
+        throw formatRewardError(checkErr, 'reading daily streak before claim');
+      }
+      console.warn(
+        'Note: Client offline while reading daily streak doc before claim, using local state:',
+        sanitizeDiagnosticMessage((checkErr as any)?.message)
+      );
     }
 
     // 2. Duplicate claim prevention for same calendar day (UTC)

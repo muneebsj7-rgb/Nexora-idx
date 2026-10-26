@@ -62,13 +62,83 @@ export const isFirebaseConfigured: boolean = Boolean(
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
+export let firestoreCacheMode: 'persistent' | 'memory' | 'default' = 'default';
+
+/**
+ * Strictly classifies whether a Firestore error is a genuine transient network / offline
+ * condition where a read-only local cache fallback (`getDocFromCache` / `getDocsFromCache`) is permitted.
+ *
+ * SECURITY INVARIANT:
+ * Never returns `true` for `permission-denied`, `unauthenticated`, `invalid-argument`,
+ * `failed-precondition`, `not-found`, or any authorization/validation error.
+ */
+export function isExpectedOfflineError(error: unknown): boolean {
+  if (!error) return false;
+  const errObj = error as { code?: unknown; message?: unknown };
+  const rawCode = typeof errObj.code === 'string' ? errObj.code.toLowerCase().trim() : '';
+  const code = rawCode.replace(/^firestore\//, '');
+  const message = typeof errObj.message === 'string' ? errObj.message.toLowerCase() : '';
+
+  // Explicitly reject security, auth, and validation errors even if message text is ambiguous
+  const nonOfflineCodes = new Set([
+    'permission-denied',
+    'unauthenticated',
+    'invalid-argument',
+    'failed-precondition',
+    'not-found',
+    'already-exists',
+    'aborted',
+    'out-of-range',
+    'unimplemented',
+    'data-loss',
+  ]);
+  if (nonOfflineCodes.has(code)) {
+    return false;
+  }
+
+  if (
+    message.includes('permission') ||
+    message.includes('insufficient permissions') ||
+    message.includes('unauthenticated') ||
+    message.includes('invalid argument')
+  ) {
+    return false;
+  }
+
+  if (code === 'unavailable' || code === 'deadline-exceeded') {
+    return true;
+  }
+
+  if (
+    message.includes('client is offline') ||
+    message.includes('could not reach cloud firestore backend') ||
+    message.includes('failed to get document because the client is offline') ||
+    message.includes('network error')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Redacts any accidental Bearer tokens, JWTs, or private key fragments from diagnostic messages.
+ */
+export function sanitizeDiagnosticMessage(rawMessage: unknown): string {
+  if (typeof rawMessage !== 'string') return 'Unknown Firestore error';
+  return rawMessage
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[REDACTED_JWT]');
+}
 
 try {
   if (isFirebaseConfigured) {
-    // Suppress internal @firebase/firestore WebChannel retry console.error spam
-    setLogLevel('silent');
+    // Use 'error' log level instead of 'silent' so genuine configuration/auth errors remain visible
+    // without noisy debug/info transport chatter or token exposure.
+    setLogLevel('error');
 
-    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+    const existingApps = getApps();
+    app = existingApps.length === 0 ? initializeApp(firebaseConfig) : getApp();
     auth = getAuth(app);
 
     const dbId =
@@ -76,26 +146,58 @@ try {
         ? firebaseConfig.firestoreDatabaseId
         : undefined;
 
-    try {
-      const localCache =
-        typeof window !== 'undefined' && typeof indexedDB !== 'undefined'
-          ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
-          : memoryLocalCache();
+    const canUseIndexedDb =
+      typeof window !== 'undefined' && typeof indexedDB !== 'undefined' && indexedDB !== null;
 
-      const firestoreSettings = {
-        experimentalForceLongPolling: true,
-        localCache,
-      };
-
-      db = dbId
-        ? initializeFirestore(app, firestoreSettings, dbId)
-        : initializeFirestore(app, firestoreSettings);
-    } catch {
-      db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+    if (canUseIndexedDb) {
+      try {
+        const persistentSettings = {
+          experimentalForceLongPolling: true,
+          localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+        };
+        db = dbId
+          ? initializeFirestore(app, persistentSettings, dbId)
+          : initializeFirestore(app, persistentSettings);
+        firestoreCacheMode = 'persistent';
+      } catch (persistErr: unknown) {
+        const errMsg = sanitizeDiagnosticMessage((persistErr as any)?.message);
+        const alreadyInitialized = errMsg.toLowerCase().includes('already been called');
+        if (alreadyInitialized) {
+          db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+        } else {
+          //Genuine IndexedDB / storage restriction (e.g., sandboxed iframe or private browsing):
+          //fall back to memoryLocalCache while preserving experimentalForceLongPolling: true
+          try {
+            const memorySettings = {
+              experimentalForceLongPolling: true,
+              localCache: memoryLocalCache(),
+            };
+            db = dbId
+              ? initializeFirestore(app, memorySettings, dbId)
+              : initializeFirestore(app, memorySettings);
+            firestoreCacheMode = 'memory';
+          } catch {
+            db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+          }
+        }
+      }
+    } else {
+      try {
+        const memorySettings = {
+          experimentalForceLongPolling: true,
+          localCache: memoryLocalCache(),
+        };
+        db = dbId
+          ? initializeFirestore(app, memorySettings, dbId)
+          : initializeFirestore(app, memorySettings);
+        firestoreCacheMode = 'memory';
+      } catch {
+        db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+      }
     }
   }
-} catch (error) {
-  console.warn('Firebase initialization note:', error);
+} catch (error: unknown) {
+  console.warn('Firebase initialization diagnostic:', sanitizeDiagnosticMessage((error as any)?.message));
 }
 
 export { app, auth, db };

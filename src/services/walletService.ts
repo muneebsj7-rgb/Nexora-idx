@@ -9,7 +9,7 @@ import {
   FirestoreError,
 } from 'firebase/firestore';
 import { WalletAsset, Transaction } from '../types';
-import { db, auth } from './firebase';
+import { db, auth, isExpectedOfflineError, sanitizeDiagnosticMessage } from './firebase';
 
 export const INITIAL_WALLET_ASSETS: WalletAsset[] = [
   {
@@ -140,6 +140,7 @@ export interface WalletBalanceRecord {
   balance: number;
   lockedBalance: number;
   updatedAt?: string;
+  isFromCache?: boolean;
 }
 
 export interface SubmitDepositParams {
@@ -174,7 +175,7 @@ function formatFirestoreWalletError(error: unknown, action: string): Error {
     }
   }
   if (error instanceof Error) {
-    return error;
+    return new Error(sanitizeDiagnosticMessage(error.message));
   }
   return new Error(`An unexpected error occurred during ${action}.`);
 }
@@ -198,11 +199,12 @@ function formatTimestamp(val: unknown): string | undefined {
 export class WalletFirestoreService {
   /**
    * Subscribes to real-time wallet asset balances stored at users/{uid}/wallet.
-   * Balances are read-only from the client.
+   * Balances are read-only from the client. Includes metadata changes to distinguish
+   * cached/offline snapshots from server-confirmed snapshots.
    */
   static subscribeUserWallet(
     uid: string,
-    onUpdate: (balances: Record<string, WalletBalanceRecord>) => void,
+    onUpdate: (balances: Record<string, WalletBalanceRecord>, meta?: { fromCache: boolean }) => void,
     onError?: (error: Error) => void
   ): () => void {
     if (!db) {
@@ -214,7 +216,9 @@ export class WalletFirestoreService {
       const walletColRef = collection(db, 'users', uid, 'wallet');
       return onSnapshot(
         walletColRef,
+        { includeMetadataChanges: true },
         (snapshot) => {
+          const fromCache = snapshot.metadata.fromCache;
           const balances: Record<string, WalletBalanceRecord> = {};
           snapshot.forEach((docSnap) => {
             const data = docSnap.data();
@@ -223,17 +227,21 @@ export class WalletFirestoreService {
               balance: typeof data.balance === 'number' ? data.balance : 0,
               lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
               updatedAt: formatTimestamp(data.updatedAt),
+              isFromCache: fromCache,
             };
           });
-          onUpdate(balances);
+          onUpdate(balances, { fromCache });
         },
         (error) => {
-          console.warn(`Firestore wallet subscription note for uid ${uid}:`, error.message);
+          console.warn(
+            `Firestore wallet subscription note for uid ${uid}:`,
+            sanitizeDiagnosticMessage(error.message)
+          );
           onError?.(formatFirestoreWalletError(error, 'reading wallet balances'));
         }
       );
     } catch (err) {
-      console.warn('Error setting up wallet snapshot listener:', err);
+      console.warn('Error setting up wallet snapshot listener:', sanitizeDiagnosticMessage((err as any)?.message));
       onError?.(formatFirestoreWalletError(err, 'subscribing to wallet'));
       return () => {};
     }
@@ -241,6 +249,8 @@ export class WalletFirestoreService {
 
   /**
    * Reads current wallet balances once from users/{uid}/wallet.
+   * Falls back to `getDocsFromCache` ONLY on genuine offline/unavailable errors — never
+   * suppressing `permission-denied` or authentication errors.
    */
   static async fetchUserWallet(uid: string): Promise<Record<string, WalletBalanceRecord>> {
     if (!db) return {};
@@ -255,10 +265,18 @@ export class WalletFirestoreService {
         balances[symbol] = {
           balance: typeof data.balance === 'number' ? data.balance : 0,
           lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
+          isFromCache: snap.metadata.fromCache,
         };
       });
       return balances;
     } catch (error) {
+      if (!isExpectedOfflineError(error)) {
+        console.warn(
+          `Firestore wallet read error for users/${uid}/wallet:`,
+          sanitizeDiagnosticMessage((error as any)?.message)
+        );
+        throw formatFirestoreWalletError(error, 'reading wallet assets');
+      }
       try {
         const cachedSnap = await getDocsFromCache(walletColRef);
         const balances: Record<string, WalletBalanceRecord> = {};
@@ -268,11 +286,11 @@ export class WalletFirestoreService {
           balances[symbol] = {
             balance: typeof data.balance === 'number' ? data.balance : 0,
             lockedBalance: typeof data.lockedBalance === 'number' ? data.lockedBalance : 0,
+            isFromCache: true,
           };
         });
         return balances;
       } catch {
-        console.warn(`Firestore wallet read notice for users/${uid}/wallet:`, error);
         throw formatFirestoreWalletError(error, 'reading wallet assets');
       }
     }
@@ -283,7 +301,7 @@ export class WalletFirestoreService {
    */
   static subscribeUserTransactions(
     uid: string,
-    onUpdate: (transactions: Transaction[]) => void,
+    onUpdate: (transactions: Transaction[], meta?: { fromCache: boolean }) => void,
     onError?: (error: Error) => void
   ): () => void {
     if (!db) {
@@ -295,6 +313,7 @@ export class WalletFirestoreService {
       const txColRef = collection(db, 'users', uid, 'transactions');
       return onSnapshot(
         txColRef,
+        { includeMetadataChanges: true },
         (snapshot) => {
           const txs: Transaction[] = [];
           snapshot.forEach((docSnap) => {
@@ -343,13 +362,18 @@ export class WalletFirestoreService {
               taskId: data.taskId,
               rewardSource: data.rewardSource,
               metadataBackfilledFrom: data.metadataBackfilledFrom,
+              planId: data.planId,
+              planName: data.planName,
+              contractId: data.contractId,
+              orderId: data.orderId,
+              idempotencyKey: data.idempotencyKey,
               updatedAt: formatTimestamp(data.updatedAt),
             });
           });
 
           // Sort descending by timestamp
           txs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-          onUpdate(txs);
+          onUpdate(txs, { fromCache: snapshot.metadata.fromCache });
         },
         (error) => {
           console.warn(`Firestore transaction subscription note for uid ${uid}:`, error.message);

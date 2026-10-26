@@ -1689,3 +1689,444 @@ export async function settleWithdrawalRejection(
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// 8. AUTHORITATIVE CLOUD MINING PLANS & ATOMIC CONTRACT PURCHASE SETTLEMENT
+// ---------------------------------------------------------------------------
+
+export type AuthoritativePlanTier = 'Entry' | 'Core' | 'Value' | 'Pro' | 'Elite';
+
+export interface AuthoritativeMiningPlanSpec {
+  id: string;
+  name: string;
+  tier: AuthoritativePlanTier;
+  algorithm: 'SHA-256';
+  targetCoin: 'BTC';
+  hashrate: number;
+  hashrateUnit: 'GH/s';
+  hashrateGHs: number;
+  hashrateTHs: number;
+  priceUSD: number;
+  durationDays: number;
+  displayedReturnPercent: number;
+  estimatedDailyYieldCoin: number;
+  estimatedDailyYieldUSD: number;
+  powerConsumptionW: number;
+  maintenanceFeePercent: number;
+  popular?: boolean;
+}
+
+/**
+ * Standard hashrate unit conversion helpers:
+ * - 1 TH/s = 1,000 GH/s
+ * - 1 GH/s = 1,000 MH/s
+ */
+export function convertHashrateToGHs(value: number, unit: 'TH/s' | 'GH/s' | 'MH/s'): number {
+  if (!Number.isFinite(value) || value < 0) return 0;
+  if (unit === 'TH/s') return Number((value * 1000).toFixed(4));
+  if (unit === 'MH/s') return Number((value / 1000).toFixed(6));
+  return Number(value.toFixed(4));
+}
+
+export function convertHashrateToTHs(value: number, unit: 'TH/s' | 'GH/s' | 'MH/s'): number {
+  if (!Number.isFinite(value) || value < 0) return 0;
+  if (unit === 'GH/s') return Number((value / 1000).toFixed(6));
+  if (unit === 'MH/s') return Number((value / 1_000_000).toFixed(9));
+  return Number(value.toFixed(6));
+}
+
+export function convertTHsToGHs(ths: number): number {
+  if (!Number.isFinite(ths) || ths < 0) return 0;
+  return Number((ths * 1000).toFixed(4));
+}
+
+export function convertGHsToMHs(ghs: number): number {
+  if (!Number.isFinite(ghs) || ghs < 0) return 0;
+  return Number((ghs * 1000).toFixed(2));
+}
+
+export const AUTHORITATIVE_MINING_PLANS: Record<string, AuthoritativeMiningPlanSpec> = {
+  plan_genesis_shaft: {
+    id: 'plan_genesis_shaft',
+    name: 'Genesis Shaft',
+    tier: 'Entry',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 10,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 10,
+    hashrateTHs: 0.01,
+    priceUSD: 10.0,
+    durationDays: 45,
+    displayedReturnPercent: 150.0,
+    estimatedDailyYieldCoin: 0.0000035,
+    estimatedDailyYieldUSD: 0.33,
+    powerConsumptionW: 160,
+    maintenanceFeePercent: 5.0,
+  },
+  plan_blockfoundry: {
+    id: 'plan_blockfoundry',
+    name: 'Blockfoundry',
+    tier: 'Core',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 18,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 18,
+    hashrateTHs: 0.018,
+    priceUSD: 48.0,
+    durationDays: 78,
+    displayedReturnPercent: 158.0,
+    estimatedDailyYieldCoin: 0.00001031,
+    estimatedDailyYieldUSD: 0.97,
+    powerConsumptionW: 288,
+    maintenanceFeePercent: 4.8,
+  },
+  plan_stratum_yard: {
+    id: 'plan_stratum_yard',
+    name: 'Stratum Yard',
+    tier: 'Value',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 34,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 34,
+    hashrateTHs: 0.034,
+    priceUSD: 135.0,
+    durationDays: 112,
+    displayedReturnPercent: 172.0,
+    estimatedDailyYieldCoin: 0.000022,
+    estimatedDailyYieldUSD: 2.07,
+    powerConsumptionW: 544,
+    maintenanceFeePercent: 4.5,
+    popular: true,
+  },
+  plan_halving_bench: {
+    id: 'plan_halving_bench',
+    name: 'Halving Bench',
+    tier: 'Pro',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 96,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 96,
+    hashrateTHs: 0.096,
+    priceUSD: 510.0,
+    durationDays: 156,
+    displayedReturnPercent: 188.0,
+    estimatedDailyYieldCoin: 0.00006521,
+    estimatedDailyYieldUSD: 6.15,
+    powerConsumptionW: 1536,
+    maintenanceFeePercent: 4.0,
+  },
+  plan_epoch_vault: {
+    id: 'plan_epoch_vault',
+    name: 'Epoch Vault',
+    tier: 'Elite',
+    algorithm: 'SHA-256',
+    targetCoin: 'BTC',
+    hashrate: 268,
+    hashrateUnit: 'GH/s',
+    hashrateGHs: 268,
+    hashrateTHs: 0.268,
+    priceUSD: 1480.0,
+    durationDays: 210,
+    displayedReturnPercent: 210.0,
+    estimatedDailyYieldCoin: 0.00015703,
+    estimatedDailyYieldUSD: 14.8,
+    powerConsumptionW: 4288,
+    maintenanceFeePercent: 3.5,
+  },
+};
+
+export interface ContractPurchaseResult {
+  alreadyProcessed: boolean;
+  userId: string;
+  orderId: string;
+  txId: string;
+  settlementId: string;
+  planId: string;
+  planName: string;
+  priceUSD: number;
+  asset: 'USDT';
+  hashrateAddedGHs: number;
+  hashrateAddedTHs: number;
+  previousBalance: number;
+  newBalance: number;
+  previousHashrateGHs: number;
+  newHashrateGHs: number;
+  previousHashrateTHs: number;
+  newHashrateTHs: number;
+  contract: Record<string, any>;
+  transaction: Record<string, any>;
+  message: string;
+}
+
+/**
+ * Atomically settles a Cloud Hashrate Contract purchase on the trusted backend:
+ * 1. Validates `planId` strictly against `AUTHORITATIVE_MINING_PLANS` (ignoring any client-supplied price/hashrate).
+ * 2. Enforces idempotency via deterministic `orderId` (`order_${idempotencyKey}`) and `users/{userId}/settlements/{orderId}`.
+ * 3. Reads server-confirmed `users/{userId}/wallet/USDT` and rejects if `balance < plan.priceUSD`.
+ * 4. Atomically deducts `plan.priceUSD` from `wallet/USDT.balance`, creates `users/{userId}/contracts/{orderId}`,
+ *    records `users/{userId}/transactions/{orderId}` (`type: 'CONTRACT_PURCHASE'`, `status: 'COMPLETED'`),
+ *    writes `users/{userId}/settlements/{orderId}`, and updates `users/{userId}/mining/session`.
+ */
+export async function purchaseMiningContract(
+  db: FirestoreLike,
+  params: {
+    userId: string;
+    planId: string;
+    idempotencyKey: string;
+    serverTimestamp?: () => any;
+  }
+): Promise<ContractPurchaseResult> {
+  const cleanUserId = String(params.userId || '').trim();
+  if (!cleanUserId) {
+    throw new Error('Authentication required: missing verified userId.');
+  }
+
+  const rawPlanId = String(params.planId || '').trim();
+  const plan = AUTHORITATIVE_MINING_PLANS[rawPlanId];
+  if (!plan) {
+    throw new Error(`Invalid or unsupported cloud mining plan '${rawPlanId || 'UNKNOWN'}'.`);
+  }
+
+  const rawKey = String(params.idempotencyKey || '').trim();
+  const sanitizedKey = rawKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  if (sanitizedKey.length < 6) {
+    throw new Error('Valid idempotencyKey (at least 6 alphanumeric characters) is required for contract purchase.');
+  }
+
+  const orderId = sanitizedKey.startsWith('order_') ? sanitizedKey : `order_${sanitizedKey}`;
+  const settlementId = `settle_${orderId}`;
+
+  return db.runTransaction(async (transaction) => {
+    const settlementRef = db.doc(`users/${cleanUserId}/settlements/${orderId}`);
+    const contractRef = db.doc(`users/${cleanUserId}/contracts/${orderId}`);
+    const txRef = db.doc(`users/${cleanUserId}/transactions/${orderId}`);
+    const walletRef = db.doc(`users/${cleanUserId}/wallet/USDT`);
+    const sessionRef = db.doc(`users/${cleanUserId}/mining/session`);
+
+    // ALL READS FIRST (Firestore transaction requirement)
+    const [settlementSnap, contractSnap, txSnap, walletSnap, sessionSnap] = await Promise.all([
+      transaction.get(settlementRef),
+      transaction.get(contractRef),
+      transaction.get(txRef),
+      transaction.get(walletRef),
+      transaction.get(sessionRef),
+    ]);
+
+    const walletData = walletSnap.exists ? walletSnap.data() || {} : {};
+    const currentBalance = roundCrypto(Number(walletData.balance || 0));
+    const currentLocked = roundCrypto(Number(walletData.lockedBalance || 0));
+
+    const sessionData = sessionSnap.exists ? sessionSnap.data() || {} : {};
+    const currentHashrateTHs = roundCrypto(Number(sessionData.hashrateTHs || 0));
+    const currentHashrateGHs =
+      typeof sessionData.hashrateGHs === 'number' && Number.isFinite(sessionData.hashrateGHs)
+        ? Number(sessionData.hashrateGHs.toFixed(4))
+        : convertTHsToGHs(currentHashrateTHs);
+
+    // Idempotency guard: if order was already settled, return existing result without charging twice
+    if (
+      settlementSnap.exists ||
+      contractSnap.exists ||
+      (txSnap.exists && txSnap.data()?.walletSettled === true)
+    ) {
+      const existingContract = contractSnap.exists ? contractSnap.data() || {} : {};
+      const existingTx = txSnap.exists ? txSnap.data() || {} : {};
+
+      return {
+        alreadyProcessed: true,
+        userId: cleanUserId,
+        orderId,
+        txId: orderId,
+        settlementId,
+        planId: plan.id,
+        planName: plan.name,
+        priceUSD: plan.priceUSD,
+        asset: 'USDT',
+        hashrateAddedGHs: plan.hashrateGHs,
+        hashrateAddedTHs: plan.hashrateTHs,
+        previousBalance: currentBalance,
+        newBalance: currentBalance,
+        previousHashrateGHs: currentHashrateGHs,
+        newHashrateGHs: currentHashrateGHs,
+        previousHashrateTHs: currentHashrateTHs,
+        newHashrateTHs: currentHashrateTHs,
+        contract: existingContract,
+        transaction: existingTx,
+        message: `Contract order ${orderId} for ${plan.name} was already settled.`,
+      };
+    }
+
+    if (!Number.isFinite(currentBalance) || currentBalance < plan.priceUSD) {
+      throw new Error(
+        `Insufficient server-confirmed USDT balance ($${currentBalance.toFixed(2)} available, $${plan.priceUSD.toFixed(2)} USDT required for ${plan.name}).`
+      );
+    }
+
+    const newBalance = roundCrypto(currentBalance - plan.priceUSD);
+    const newHashrateGHs = Number((currentHashrateGHs + plan.hashrateGHs).toFixed(4));
+    const newHashrateTHs = Number((currentHashrateTHs + plan.hashrateTHs).toFixed(6));
+    const nowIso = new Date().toISOString();
+    const expiresIso = new Date(Date.now() + plan.durationDays * 86400 * 1000).toISOString();
+    const sessionId = sessionData.lastSessionId || `sess_${Date.now()}`;
+
+    const contractRecord = {
+      id: orderId,
+      orderId,
+      userId: cleanUserId,
+      planId: plan.id,
+      planName: plan.name,
+      tier: plan.tier,
+      algorithm: plan.algorithm,
+      targetCoin: plan.targetCoin,
+      hashrate: plan.hashrate,
+      hashrateUnit: plan.hashrateUnit,
+      hashrateGHs: plan.hashrateGHs,
+      hashrateTHs: plan.hashrateTHs,
+      priceUSD: plan.priceUSD,
+      asset: 'USDT' as const,
+      durationDays: plan.durationDays,
+      displayedReturnPercent: plan.displayedReturnPercent,
+      estimatedDailyYieldCoin: plan.estimatedDailyYieldCoin,
+      estimatedDailyYieldUSD: plan.estimatedDailyYieldUSD,
+      powerConsumptionW: plan.powerConsumptionW,
+      maintenanceFeePercent: plan.maintenanceFeePercent,
+      status: 'ACTIVE' as const,
+      purchasedAt: nowIso,
+      expiresAt: expiresIso,
+      settlementId,
+      txId: orderId,
+      sessionId,
+      idempotencyKey: sanitizedKey,
+      isSimulated: true,
+      updatedAt: nowIso,
+    };
+
+    const txRecord = {
+      id: orderId,
+      orderId,
+      contractId: orderId,
+      planId: plan.id,
+      planName: plan.name,
+      userId: cleanUserId,
+      type: 'CONTRACT_PURCHASE' as const,
+      asset: 'USDT',
+      amount: plan.priceUSD,
+      amountUSD: plan.priceUSD,
+      fee: 0,
+      status: 'COMPLETED' as const,
+      settlementStatus: 'PURCHASED' as const,
+      settlementId,
+      walletSettled: true,
+      walletCredited: false,
+      idempotencyKey: sanitizedKey,
+      previousBalance: currentBalance,
+      newBalance,
+      timestamp: nowIso,
+      note: `Cloud Hashrate Contract Purchase: ${plan.name} (+${plan.hashrate} ${plan.hashrateUnit} for ${plan.durationDays} days)`,
+      updatedAt: nowIso,
+    };
+
+    const settlementRecord = {
+      id: settlementId,
+      txId: orderId,
+      orderId,
+      contractId: orderId,
+      userId: cleanUserId,
+      type: 'CONTRACT_PURCHASE',
+      action: 'PURCHASE_CONTRACT',
+      status: 'COMPLETED',
+      settlementStatus: 'PURCHASED',
+      asset: 'USDT',
+      amount: plan.priceUSD,
+      planId: plan.id,
+      planName: plan.name,
+      hashrateAddedGHs: plan.hashrateGHs,
+      hashrateAddedTHs: plan.hashrateTHs,
+      previousHashrateGHs: currentHashrateGHs,
+      newHashrateGHs,
+      previousHashrateTHs: currentHashrateTHs,
+      newHashrateTHs,
+      previousBalance: currentBalance,
+      newBalance,
+      idempotencyKey: sanitizedKey,
+      processedAt: nowIso,
+      note: `Purchased ${plan.name} for ${plan.priceUSD} USDT.`,
+    };
+
+    // ALL WRITES AFTER READS
+    if (!walletSnap.exists) {
+      transaction.set(walletRef, {
+        symbol: 'USDT',
+        name: 'Tether USD',
+        balance: newBalance,
+        lockedBalance: currentLocked,
+        priceUSD: 1.0,
+        change24h: 0,
+        updatedAt: nowIso,
+      });
+    } else {
+      transaction.update(walletRef, {
+        balance: newBalance,
+        lockedBalance: currentLocked,
+        updatedAt: nowIso,
+      });
+    }
+
+    transaction.set(contractRef, contractRecord);
+    transaction.set(txRef, txRecord);
+    transaction.set(settlementRef, settlementRecord);
+
+    transaction.set(
+      sessionRef,
+      {
+        userId: cleanUserId,
+        id: sessionData.id || 'session-live',
+        status: 'ACTIVE',
+        algorithm: 'SHA-256 (BTC)',
+        targetCoin: 'BTC',
+        hashrateGHs: newHashrateGHs,
+        hashrateTHs: newHashrateTHs,
+        planId: plan.id,
+        activeContractId: orderId,
+        activeContractName: plan.name,
+        startedAt: sessionData.startedAt || nowIso,
+        lastSessionId: sessionId,
+        efficiencyWTH: typeof sessionData.efficiencyWTH === 'number' ? sessionData.efficiencyWTH : 16.0,
+        temperatureC: 58.4,
+        poolName: sessionData.poolName || 'Nexora Global Stratum - FRA01',
+        hardwareProfile: sessionData.hardwareProfile || 'Balanced',
+        isSimulated: true,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    return {
+      alreadyProcessed: false,
+      userId: cleanUserId,
+      orderId,
+      txId: orderId,
+      settlementId,
+      planId: plan.id,
+      planName: plan.name,
+      priceUSD: plan.priceUSD,
+      asset: 'USDT',
+      hashrateAddedGHs: plan.hashrateGHs,
+      hashrateAddedTHs: plan.hashrateTHs,
+      previousBalance: currentBalance,
+      newBalance,
+      previousHashrateGHs: currentHashrateGHs,
+      newHashrateGHs,
+      previousHashrateTHs: currentHashrateTHs,
+      newHashrateTHs,
+      contract: contractRecord,
+      transaction: txRecord,
+      message: `${plan.name} activated! Deducted $${plan.priceUSD.toFixed(2)} USDT and allocated +${plan.hashrate} ${plan.hashrateUnit} simulated cloud hashrate.`,
+    };
+  });
+}
+
