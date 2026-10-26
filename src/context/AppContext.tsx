@@ -377,7 +377,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setMarketError(null);
     } catch (err: any) {
       setIsMarketsLive(false);
-      setMarketError(err?.message || 'Unable to load Binance Spot market snapshot.');
+      setMarketError(err?.message || 'Market data temporarily unavailable.');
     }
   };
 

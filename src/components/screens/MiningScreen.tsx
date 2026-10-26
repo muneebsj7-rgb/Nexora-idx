@@ -1,30 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
-  Cpu,
   Zap,
-  Thermometer,
   Clock,
   Play,
   Pause,
-  Sliders,
   ShieldCheck,
   Sparkles,
   CheckCircle2,
-  Server,
   Layers,
-  Activity,
-  Info,
-  XCircle,
-  Loader2,
   AlertCircle,
   ExternalLink,
-  Calendar,
-  Hash,
   FileText,
   X,
   ArrowUpRight,
   Lock,
+  Loader2,
 } from 'lucide-react';
 import { MINING_PLANS, resolveSessionHashrateGHs, convertGHsToMHs } from '../../services/miningService';
 import { DepositModal } from '../modals/DepositModal';
@@ -39,7 +30,6 @@ export const MiningScreen: React.FC = () => {
     userContracts,
     isOfflineCache,
     toggleMining,
-    setHardwareProfile,
     markets,
     walletAssets,
     submitPlanOrder,
@@ -189,11 +179,6 @@ export const MiningScreen: React.FC = () => {
       ? Number((estimatedDailyYieldUSD / btcPrice).toFixed(8))
       : 0;
 
-  // Share efficiency
-  const totalShares = miningSession.acceptedShares + miningSession.rejectedShares;
-  const shareEfficiency =
-    totalShares > 0 ? ((miningSession.acceptedShares / totalShares) * 100).toFixed(2) : '100.00';
-
   // Direct purchase handler with idempotency key protection
   const handleDirectPurchase = async (plan: MiningPlan) => {
     if (purchasingPlanId) return;
@@ -285,17 +270,13 @@ export const MiningScreen: React.FC = () => {
 
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6 pb-24 px-2 sm:px-4 pt-1 animate-in fade-in duration-300">
-      {/* 1. TOP HEADER & SIMULATED TELEMETRY DISCLOSURE */}
+      {/* 1. TOP HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-extrabold text-[#F4F7FC] tracking-tight">
               Cloud Mining Terminal
             </h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
-              <Info className="w-3 h-3" />
-              <span>Simulated Mining</span>
-            </span>
             {isOfflineCache && (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-[#FF647C]/15 text-[#FF647C] border border-[#FF647C]/30">
                 <AlertCircle className="w-3 h-3" />
@@ -304,8 +285,7 @@ export const MiningScreen: React.FC = () => {
             )}
           </div>
           <p className="text-xs text-[#98A6BA] mt-1">
-            SHA-256 Bitcoin Cloud Contracts • Pool Node:{' '}
-            <span className="font-mono text-[#F4F7FC] font-semibold">{miningSession.poolName}</span>
+            Bitcoin Cloud Mining Dashboard &amp; Active Contract Monitor
           </p>
         </div>
 
@@ -436,10 +416,6 @@ export const MiningScreen: React.FC = () => {
                 <div className="text-[11px] font-mono text-[#98A6BA] mt-0.5">
                   {displayHashrateTHs.toFixed(3)} TH/s • {displayHashrateMHs.toLocaleString()} MH/s
                 </div>
-
-                <div className="mt-2 px-2.5 py-0.5 rounded-md bg-[#F3B64B]/10 border border-[#F3B64B]/30 text-[10px] font-mono font-semibold text-[#F3B64B]">
-                  Simulated Mining
-                </div>
               </div>
             </div>
 
@@ -533,20 +509,21 @@ export const MiningScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Accepted & Rejected Shares */}
+              {/* Allocated Hashrate */}
               <div className="p-3.5 rounded-2xl bg-[#11192A] border border-[#1E293B]">
                 <div className="flex items-center gap-1.5 text-[11px] text-[#98A6BA]">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-[#00D6A3]" />
-                  <span>Stratum Shares</span>
+                  <Zap className="w-3.5 h-3.5 text-[#00D6A3]" />
+                  <span>Allocated Hashrate</span>
                 </div>
                 <div className="text-base sm:text-lg font-extrabold font-mono text-[#F4F7FC] mt-1.5">
-                  {miningSession.acceptedShares.toLocaleString()}{' '}
-                  <span className="text-xs font-normal text-[#FF647C]">
-                    / {miningSession.rejectedShares} rej
-                  </span>
+                  {displayHashrateGHs.toLocaleString('en-US', {
+                    minimumFractionDigits: displayHashrateGHs % 1 === 0 ? 0 : 2,
+                    maximumFractionDigits: 2,
+                  })}{' '}
+                  <span className="text-xs font-normal text-[#00D6A3]">GH/s</span>
                 </div>
-                <div className="text-[10px] font-mono text-[#00D6A3] mt-0.5">
-                  {shareEfficiency}% Acceptance
+                <div className="text-[10px] font-mono text-[#98A6BA] mt-0.5">
+                  {displayHashrateTHs.toFixed(3)} TH/s
                 </div>
               </div>
 
@@ -577,42 +554,22 @@ export const MiningScreen: React.FC = () => {
                 )}
               </div>
 
-              {/* Hardware Efficiency & Thermal */}
+              {/* Active Contracts Summary */}
               <div className="p-3.5 rounded-2xl bg-[#11192A] border border-[#1E293B]">
                 <div className="flex items-center gap-1.5 text-[11px] text-[#98A6BA]">
-                  <Thermometer className="w-3.5 h-3.5 text-[#FF647C]" />
-                  <span>Rig Core / Power</span>
+                  <Layers className="w-3.5 h-3.5 text-[#F3B64B]" />
+                  <span>Active Contracts</span>
                 </div>
                 <div className="text-base sm:text-lg font-extrabold font-mono text-[#F4F7FC] mt-1.5">
-                  {miningSession.temperatureC}°C
+                  {activeContracts.length} Active
                 </div>
                 <div className="text-[10px] font-mono text-[#98A6BA] mt-0.5">
-                  {miningSession.efficiencyWTH} W/TH • {miningSession.hardwareProfile}
+                  {userContracts.length} Total Purchased
                 </div>
               </div>
             </div>
 
-            {/* Hardware Tuning Profile Bar */}
-            <div className="pt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-1.5 text-[#98A6BA]">
-                <Sliders className="w-3.5 h-3.5 text-[#00D6A3]" />
-                <span>Tuning Mode:</span>
-                <div className="inline-flex items-center gap-1 ml-1 bg-[#11192A] p-1 rounded-xl border border-[#1E293B]">
-                  {(['Eco', 'Balanced', 'Turbo Overclock'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => setHardwareProfile(mode)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
-                        miningSession.hardwareProfile === mode
-                          ? 'bg-[#00D6A3] text-[#080B12]'
-                          : 'text-[#98A6BA] hover:text-[#F4F7FC]'
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <div className="pt-1 flex items-center justify-end text-xs">
               <span className="text-[11px] font-mono text-[#98A6BA]">
                 1 TH/s = 1,000 GH/s • 1 GH/s = 1,000 MH/s
               </span>
@@ -1066,7 +1023,7 @@ export const MiningScreen: React.FC = () => {
             </div>
 
             <div className="p-3 rounded-xl bg-[#F3B64B]/10 border border-[#F3B64B]/30 text-[11px] text-[#98A6BA] leading-relaxed">
-              <strong className="text-[#F3B64B]">Simulated Mining Notice:</strong> Displayed return percentages and daily yield figures are configurable contract terms and simulated estimates, not guaranteed payouts.
+              <strong className="text-[#F3B64B]">Contract Terms Notice:</strong> Displayed return percentages and daily yield figures are configurable contract terms and estimated projections, not guaranteed payouts.
             </div>
 
             <button

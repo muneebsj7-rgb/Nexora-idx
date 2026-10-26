@@ -225,7 +225,7 @@ export const ProfileScreen: React.FC = () => {
                   {user.isDemo
                     ? 'In Sandbox Demo Mode, email verification is simulated. Connect Firebase to verify real email addresses.'
                     : user.isEmailVerified
-                    ? 'Your email is verified with Firebase Auth for higher daily withdrawal thresholds and multi-sig security.'
+                    ? 'Your email is verified with Firebase Auth for higher daily withdrawal thresholds.'
                     : 'Please verify your email address via Firebase link to enable maximum mining withdrawal limits.'}
                 </span>
               </div>
@@ -253,7 +253,7 @@ export const ProfileScreen: React.FC = () => {
               <span>Accent Color Themes</span>
             </h2>
             <p className="text-xs text-[#98A6BA] mt-0.5">
-              Customize the visual palette of your Nexora Mine control terminal
+              Customize the visual palette of your Nexora Cloud Mining terminal
             </p>
           </div>
         </div>
@@ -382,12 +382,12 @@ export const ProfileScreen: React.FC = () => {
 
           <div className="flex items-center justify-between">
             <span className="text-[#98A6BA]">Live Market Feed:</span>
-            <span className="font-mono text-[#00D6A3] font-bold">Active (Binance Public Tickers)</span>
+            <span className="font-mono text-[#00D6A3] font-bold">Active (Real-Time Market Stream)</span>
           </div>
 
           <div className="flex items-center justify-between">
-            <span className="text-[#98A6BA]">Stratum Mining Engine:</span>
-            <span className="font-mono text-[#F3B64B] font-bold">Simulated Telemetry Engine</span>
+            <span className="text-[#98A6BA]">Cloud Contract Engine:</span>
+            <span className="font-mono text-[#00D6A3] font-bold">Active Contract Allocation</span>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan to resolve the Firestore FAILED_PRECONDITION missing composite collectionGroup index error on /api/admin/pending-requests, /api/admin/pending-deposits, and /api/admin/reconcile-settlements by adding an automatic per-user subcollection fallback and updating firestore.indexes.json.",
-  "updatedAt":  "2026-10-26T17:54:46.746401961Z",
+  "summary":  "Comprehensive implementation plan to rename the displayed application to Nexora Cloud Mining and remove all specified technical labels, misleading hardware badges, provider branding, and tuning-mode UI while preserving all 5 BTC mining contracts, live market data, wallet security, and Firebase integration.",
+  "updatedAt":  "2026-10-26T18:23:23.176131165Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

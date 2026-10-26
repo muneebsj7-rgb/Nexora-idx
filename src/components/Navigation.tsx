@@ -57,10 +57,10 @@ export const Navigation: React.FC = () => {
               </div>
               <div>
                 <span className="font-extrabold text-base tracking-tight text-[#F4F7FC] flex items-center gap-1.5">
-                  NEXORA <span className={themeStyle.text}>MINE</span>
+                  NEXORA <span className={themeStyle.text}>CLOUD MINING</span>
                 </span>
                 <span className="text-[10px] text-[#98A6BA] block -mt-1 font-mono uppercase tracking-wider">
-                  Cloud Pool Stratum
+                  Bitcoin Cloud Contracts
                 </span>
               </div>
             </button>

@@ -236,7 +236,7 @@ export const PlanModal: React.FC<PlanModalProps> = ({
         <div className="mt-3 p-3 rounded-xl bg-[#090D16] border border-[#1E293B] text-[#98A6BA] text-[11px] flex gap-2">
           <ShieldCheck className="w-4 h-4 text-[#F3B64B] shrink-0 mt-0.5" />
           <p>
-            <strong className="text-[#F4F7FC]">Contract Terms &amp; Simulation Notice:</strong>{' '}
+            <strong className="text-[#F4F7FC]">Contract Terms Notice:</strong>{' '}
             Displayed returns represent configurable contract terms only, not guaranteed earnings. Purchases are settled atomically against your server-confirmed USDT balance.
           </p>
         </div>

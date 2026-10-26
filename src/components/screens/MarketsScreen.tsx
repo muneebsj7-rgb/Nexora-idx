@@ -87,7 +87,7 @@ export const MarketsScreen: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-[#F4F7FC] tracking-tight flex items-center gap-2 flex-wrap">
-            <span>Binance Spot Terminal</span>
+            <span>Crypto Market Terminal</span>
             <span
               className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold border ${
                 marketConnectionStatus === 'CONNECTED'
@@ -100,7 +100,7 @@ export const MarketsScreen: React.FC = () => {
               {marketConnectionStatus === 'CONNECTED' ? (
                 <>
                   <Wifi className="w-3 h-3" />
-                  <span>WebSocket Live</span>
+                  <span>Live Stream</span>
                 </>
               ) : isMarketsLive ? (
                 <>
@@ -116,7 +116,7 @@ export const MarketsScreen: React.FC = () => {
             </span>
           </h1>
           <p className="text-xs text-[#98A6BA] mt-1">
-            Official Binance Spot real-time 24h tickers, OHLCV candlesticks & proof-of-work mineability
+            Real-time 24h market tickers, OHLCV candlesticks &amp; proof-of-work mineability
           </p>
         </div>
 
@@ -134,12 +134,12 @@ export const MarketsScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Explicit Error Banner when Binance feed is unreachable and no data is loaded */}
+      {/* Explicit Error Banner when market feed is unreachable and no data is loaded */}
       {marketError && markets.length === 0 && (
         <div className="rounded-3xl p-6 bg-[#121925] border border-[#FF647C]/40 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-[#FF647C] mx-auto" />
           <div>
-            <h3 className="text-sm font-bold text-[#F4F7FC]">Binance Market Feed Unavailable</h3>
+            <h3 className="text-sm font-bold text-[#F4F7FC]">Market Data Temporarily Unavailable</h3>
             <p className="text-xs text-[#98A6BA] mt-1 max-w-md mx-auto">{marketError}</p>
           </div>
           <button
@@ -502,7 +502,7 @@ export const MarketsScreen: React.FC = () => {
           ) : (
             <div className="p-8 text-center text-xs text-[#98A6BA]">
               {markets.length === 0
-                ? 'Connecting to Binance Spot market feed...'
+                ? 'Loading live market data...'
                 : 'No cryptocurrency matching your criteria was found.'}
             </div>
           )}
@@ -528,7 +528,7 @@ export const MarketsScreen: React.FC = () => {
                     )}
                   </div>
                   <span className="text-xs text-[#98A6BA] font-mono">
-                    Consensus: {modalCoin.algorithm} • Binance Spot Feed
+                    Consensus: {modalCoin.algorithm}
                   </span>
                 </div>
               </div>
@@ -602,7 +602,7 @@ export const MarketsScreen: React.FC = () => {
               <div className="p-3 rounded-xl bg-[#00D6A3]/10 border border-[#00D6A3]/20 text-xs text-[#00D6A3] flex items-center gap-2">
                 <Zap className="w-4 h-4 text-[#00D6A3] shrink-0" />
                 <span>
-                  Supported for direct cloud hash contracts on Nexora Stratum pools.
+                  Supported for cloud mining contracts on Nexora Cloud Mining.
                 </span>
               </div>
             )}

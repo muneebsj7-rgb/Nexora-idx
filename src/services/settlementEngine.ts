@@ -2097,7 +2097,7 @@ export async function purchaseMiningContract(
         lastSessionId: sessionId,
         efficiencyWTH: typeof sessionData.efficiencyWTH === 'number' ? sessionData.efficiencyWTH : 16.0,
         temperatureC: 58.4,
-        poolName: sessionData.poolName || 'Nexora Global Stratum - FRA01',
+        poolName: sessionData.poolName || 'Nexora Cloud Mining',
         hardwareProfile: sessionData.hardwareProfile || 'Balanced',
         isSimulated: true,
         updatedAt: nowIso,
@@ -2125,7 +2125,7 @@ export async function purchaseMiningContract(
       newHashrateTHs,
       contract: contractRecord,
       transaction: txRecord,
-      message: `${plan.name} activated! Deducted $${plan.priceUSD.toFixed(2)} USDT and allocated +${plan.hashrate} ${plan.hashrateUnit} simulated cloud hashrate.`,
+      message: `${plan.name} activated! Deducted $${plan.priceUSD.toFixed(2)} USDT and allocated +${plan.hashrate} ${plan.hashrateUnit} cloud hashrate.`,
     };
   });
 }

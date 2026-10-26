@@ -240,7 +240,7 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
         setLoading(false);
       } catch (err: any) {
         if (isCancelled) return;
-        setError(err?.message || 'Unable to load candlestick data from Binance.');
+        setError(err?.message || 'Market chart data temporarily unavailable.');
         setLoading(false);
         setStreamStatus('ERROR');
       }
@@ -426,7 +426,7 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
           <div className="absolute inset-0 bg-[#0D121C]/85 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 z-10">
             <RefreshCw className="w-6 h-6 text-[#00D6A3] animate-spin" />
             <span className="text-xs font-mono text-[#98A6BA]">
-              Loading {symbol}/USDT ({interval}) candlesticks from Binance...
+              Loading {symbol}/USDT ({interval}) candlestick chart...
             </span>
           </div>
         )}
@@ -435,7 +435,7 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
         {error && !loading && (
           <div className="absolute inset-0 bg-[#0D121C]/95 flex flex-col items-center justify-center p-6 text-center z-10">
             <AlertTriangle className="w-7 h-7 text-[#FF647C] mb-2" />
-            <p className="text-xs font-bold text-[#F4F7FC]">Binance Candlestick Stream Unavailable</p>
+            <p className="text-xs font-bold text-[#F4F7FC]">Market Chart Temporarily Unavailable</p>
             <p className="text-[11px] text-[#98A6BA] max-w-sm mt-1">{error}</p>
             <button
               type="button"

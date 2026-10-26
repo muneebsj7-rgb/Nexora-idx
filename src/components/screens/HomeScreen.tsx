@@ -158,10 +158,7 @@ export const HomeScreen: React.FC = () => {
               </span>
             </div>
             <h1 className="text-lg sm:text-xl font-extrabold text-[#F4F7FC] tracking-tight flex items-center gap-2">
-              NEXORA <span className="text-[#00D6A3]">MINE</span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-                PRO POOL
-              </span>
+              NEXORA <span className="text-[#00D6A3]">CLOUD MINING</span>
             </h1>
           </div>
         </div>
@@ -199,11 +196,6 @@ export const HomeScreen: React.FC = () => {
                 {showBalance ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
             </div>
-
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#182232] border border-[#253144] text-[11px] text-[#00D6A3] font-mono">
-              <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse inline-block" />
-              <span>Pool: Frankfurt 01</span>
-            </div>
           </div>
 
           {/* Primary Balance Figures */}
@@ -235,11 +227,11 @@ export const HomeScreen: React.FC = () => {
             </div>
 
             <div className="bg-[#0D121C]/80 p-3 rounded-2xl border border-[#253144]">
-              <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Today's Simulated Yield</span>
+              <span className="text-[10px] text-[#98A6BA] uppercase font-semibold block">Est. Daily Yield</span>
               <span className="text-xs sm:text-sm font-bold text-[#00D6A3] font-mono mt-0.5 block">
                 {showBalance ? `+$${miningSession.todayEstimatedRewardUSD.toFixed(2)}` : '••••'}
               </span>
-              <span className="text-[10px] text-[#98A6BA] block">Simulated telemetry</span>
+              <span className="text-[10px] text-[#98A6BA] block">Contract estimate</span>
             </div>
           </div>
 
@@ -275,11 +267,11 @@ export const HomeScreen: React.FC = () => {
             </button>
           </div>
 
-          {/* Honest Simulation Disclosure */}
+          {/* Honest Disclosure */}
           <div className="mt-4 flex items-center gap-1.5 text-[10px] text-[#98A6BA]">
             <Info className="w-3.5 h-3.5 text-[#00D6A3] shrink-0" />
             <span>
-              Simulated cloud pool environment. Confirmed balances require backend node verification.
+              Estimated yields are based on active contract terms. Confirmed wallet balances require backend verification.
             </span>
           </div>
         </div>
@@ -314,7 +306,7 @@ export const HomeScreen: React.FC = () => {
                   </span>
 
                   <span className="font-bold text-[#F4F7FC] text-sm">
-                    {miningSession.status === 'ACTIVE' ? 'Cloud Rig Active' : 'Mining Standby'}
+                    {miningSession.status === 'ACTIVE' ? 'Session Active' : 'Mining Standby'}
                   </span>
 
                   <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#0D121C] border border-[#253144] text-[#98A6BA]">
@@ -329,7 +321,10 @@ export const HomeScreen: React.FC = () => {
                   )}
                 </div>
                 <p className="text-xs text-[#98A6BA] mt-1">
-                  Stratum Pool: <span className="font-mono text-[#F4F7FC] font-semibold">{miningSession.poolName}</span>
+                  Active Contract:{' '}
+                  <span className="font-mono text-[#F4F7FC] font-semibold">
+                    {miningSession.activeContractName || 'BTC Cloud Contract'}
+                  </span>
                 </p>
               </div>
             </div>
@@ -361,7 +356,7 @@ export const HomeScreen: React.FC = () => {
                 onClick={() => setActiveTab('mining')}
                 className="py-2 px-3 rounded-xl bg-[#182232] hover:bg-[#253144] text-[#F4F7FC] text-xs font-semibold border border-[#253144] transition-colors flex items-center gap-1"
               >
-                <span>Rig Telemetry</span>
+                <span>Mining Dashboard</span>
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -412,11 +407,11 @@ export const HomeScreen: React.FC = () => {
 
             <div className="p-2.5 rounded-2xl bg-[#0D121C] border border-[#253144]">
               <div className="flex items-center gap-1.5 text-[#98A6BA] text-[11px]">
-                <Cpu className="w-3.5 h-3.5 text-[#FF647C]" />
-                <span>Shares / Health</span>
+                <Cpu className="w-3.5 h-3.5 text-[#00D6A3]" />
+                <span>Session Status</span>
               </div>
               <div className="text-base font-extrabold text-[#F4F7FC] font-mono mt-1">
-                {miningSession.acceptedShares} / {miningSession.temperatureC}°C
+                {miningSession.status === 'ACTIVE' ? 'Active' : 'Standby'}
               </div>
             </div>
           </div>
@@ -584,12 +579,12 @@ export const HomeScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* 5. LIVE MARKET SNAPSHOT (Real-Time Binance Spot Tickers + Candlestick Chart) */}
+      {/* 5. LIVE MARKET SNAPSHOT */}
       <div className="rounded-3xl p-5 border border-[#253144] bg-[#121925] shadow-xl">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-bold text-[#98A6BA] uppercase tracking-wider">
-              Binance Spot Market Snapshot
+              Live Market Snapshot
             </h2>
             <span
               className={`inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full ${
@@ -635,7 +630,7 @@ export const HomeScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* 4 Asset Selection Cards with Real-Time Binance 24h Range & Volume */}
+        {/* 4 Asset Selection Cards with Real-Time 24h Range & Volume */}
         {snapshotMarkets.length > 0 ? (
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -711,8 +706,8 @@ export const HomeScreen: React.FC = () => {
           <div className="p-6 text-center text-xs text-[#98A6BA] space-y-2">
             <p>
               {marketError
-                ? `Binance market feed error: ${marketError}`
-                : 'Connecting to Binance Spot market stream...'}
+                ? `Market data temporarily unavailable: ${marketError}`
+                : 'Loading live market stream...'}
             </p>
             {marketError && (
               <button

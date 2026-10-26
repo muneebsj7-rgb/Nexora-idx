@@ -56,7 +56,7 @@ export const AuthModal: React.FC = () => {
             </div>
             <div>
               <h3 className="font-bold text-[#F4F7FC] text-base">
-                {authModalMode === 'login' && 'Sign In to Nexora Mine'}
+                {authModalMode === 'login' && 'Sign In to Nexora Cloud Mining'}
                 {authModalMode === 'register' && 'Create Miner Account'}
                 {authModalMode === 'forgot' && 'Reset Your Password'}
               </h3>

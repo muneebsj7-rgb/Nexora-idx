@@ -377,10 +377,7 @@ export const WalletScreen: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-[#F4F7FC] tracking-tight flex items-center gap-2">
-            Mining Wallet & Custody
-            <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-              Multi-Sig Vault
-            </span>
+            Mining Wallet &amp; Custody
           </h1>
           <p className="text-xs text-[#98A6BA] mt-1">
             Secure multi-chain asset balances, deposit addresses, and payout records
@@ -394,16 +391,11 @@ export const WalletScreen: React.FC = () => {
                 <span className="w-2 h-2 rounded-full bg-[#F3B64B]" />
                 Offline Cache (Stale View)
               </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-                <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse" />
-                Firestore Synced
-              </span>
-            )
+            ) : null
           ) : (
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30">
               <span className="w-2 h-2 rounded-full bg-[#F3B64B]" />
-              Demo Sandbox (Simulated)
+              Demo Sandbox
             </span>
           )}
         </div>
@@ -1046,11 +1038,6 @@ export const WalletScreen: React.FC = () => {
                             DEMO
                           </span>
                         )}
-                        {isPending && !tx.isDemo && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-semibold bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-                            FIRESTORE
-                          </span>
-                        )}
                       </div>
                       <div className="text-[10px] text-[#98A6BA] font-mono mt-0.5 truncate flex items-center gap-1.5">
                         <span>{new Date(tx.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
@@ -1118,7 +1105,7 @@ export const WalletScreen: React.FC = () => {
                 <div>
                   <h3 className="font-bold text-[#F4F7FC] text-base">Transaction Details</h3>
                   <p className="text-[10px] text-[#98A6BA] font-mono">
-                    {selectedTx.isDemo ? 'Sandbox Simulation' : 'Firestore Synced Record'}
+                    {selectedTx.isDemo ? 'Sandbox Mode' : 'Verified Ledger Record'}
                   </p>
                 </div>
               </div>

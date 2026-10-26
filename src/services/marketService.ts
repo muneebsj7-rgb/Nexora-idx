@@ -134,14 +134,14 @@ async function fetchFromBinanceRest<T>(pathWithQuery: string): Promise<T> {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`Binance REST returned HTTP ${response.status}`);
+        throw new Error(`Market feed returned HTTP ${response.status}`);
       }
       return (await response.json()) as T;
     } catch (err: any) {
       lastError = err instanceof Error ? err : new Error(String(err));
     }
   }
-  throw lastError || new Error('Unable to reach Binance public market data endpoints.');
+  throw lastError || new Error('Market data temporarily unavailable.');
 }
 
 interface Binance24hrTickerRaw {
@@ -171,7 +171,7 @@ export async function fetchLiveMarketTickers(): Promise<{
   const rawTickers = await fetchFromBinanceRest<Binance24hrTickerRaw[]>(`/ticker/24hr?symbols=${query}`);
 
   if (!Array.isArray(rawTickers) || rawTickers.length === 0) {
-    throw new Error('Binance returned an empty or unexpected ticker response.');
+    throw new Error('Market data temporarily unavailable.');
   }
 
   const nowIso = new Date().toISOString();
@@ -211,7 +211,7 @@ export async function fetchLiveMarketTickers(): Promise<{
   }
 
   if (markets.length === 0) {
-    throw new Error('No valid Binance Spot ticker records found.');
+    throw new Error('Market data temporarily unavailable.');
   }
 
   return {

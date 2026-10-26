@@ -1,7 +1,7 @@
 import React from 'react';
 
 /**
- * Universal SVG gradient definitions for icon color grading across NEXORA MINE.
+ * Universal SVG gradient definitions for icon color grading across Nexora Cloud Mining.
  * Allows icons to use stroke="url(#icon-grad-...)" or fill="url(#icon-grad-...)"
  */
 export const SvgIconGradients: React.FC = () => {

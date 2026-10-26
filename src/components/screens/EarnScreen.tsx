@@ -60,17 +60,9 @@ export const EarnScreen: React.FC = () => {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-extrabold text-[#F4F7FC] tracking-tight flex items-center gap-2">
-              Earn & Referral Center
-              <span className="text-xs px-2.5 py-0.5 rounded-full font-mono font-semibold bg-[#F3B64B]/10 text-[#F3B64B] border border-[#F3B64B]/30">
-                Tier Multipliers
-              </span>
+              Earn &amp; Referral Center
             </h1>
-            {isRealUser ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-[#00D6A3]/10 text-[#00D6A3] border border-[#00D6A3]/30">
-                <span className="w-2 h-2 rounded-full bg-[#00D6A3] animate-pulse" />
-                Firestore Synced (UTC)
-              </span>
-            ) : (
+            {!isRealUser && (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
                 <span className="w-2 h-2 rounded-full bg-[#F3B64B]" />
                 Sandbox Demo
@@ -310,7 +302,7 @@ export const EarnScreen: React.FC = () => {
                         addToast('Security Settings', 'Complete this requirement in your Profile & Security Settings.', 'info');
                       } else if (task.category === 'Mining') {
                         setActiveTab('mining');
-                        addToast('Cloud Mining Terminal', 'Keep your cloud mining rig active to complete this milestone.', 'info');
+                        addToast('Cloud Mining Terminal', 'Keep your cloud mining session active to complete this milestone.', 'info');
                       } else if (task.actionUrl) {
                         addToast('External Community Link', `Visit ${task.actionUrl} in a new tab to join the Nexora community.`, 'info');
                       } else {
