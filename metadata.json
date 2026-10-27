@@ -1,6 +1,6 @@
 {
-  "name": "NEXORA MINE",
-  "description": "Cryptocurrency cloud mining mobile web platform with real-time markets, mining plans, and wallet management.",
+  "name": "Nexora Cloud Mining",
+  "description": "Nexora Cloud Mining platform with real-time crypto markets, BTC mining contracts, and secure wallet management.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

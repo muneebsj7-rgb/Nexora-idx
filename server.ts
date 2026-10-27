@@ -1171,7 +1171,7 @@ async function initializeServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Nexora Mine server active on http://0.0.0.0:${PORT} (mode: ${process.env.NODE_ENV || 'development'})`);
+    console.log(`Nexora Cloud Mining server active on http://0.0.0.0:${PORT} (mode: ${process.env.NODE_ENV || 'development'})`);
   });
 
   httpServer.on('error', (err: any) => {
@@ -1181,6 +1181,6 @@ async function initializeServer() {
 
 if (process.env.NEXORA_SKIP_LISTEN !== 'true') {
   initializeServer().catch((err) => {
-    console.error('Fatal error initializing Nexora Mine server:', err);
+    console.error('Fatal error initializing Nexora Cloud Mining server:', err);
   });
 }
