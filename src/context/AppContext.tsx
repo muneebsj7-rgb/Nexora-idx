@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { UserProfile, CryptoMarket, MiningSession, MiningContract, WalletAsset, Transaction, DailyReward, EarnTask, DailyStreakRecord, MarketConnectionStatus } from '../types';
 import { AuthService } from '../services/authService';
 import { fetchLiveMarketTickers, subscribeMarketTickersWebSocket, SUPPORTED_BINANCE_PAIRS } from '../services/marketService';
@@ -84,7 +84,18 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [activeTab, setActiveTab] = useState<NavTab>('home');
+  const [activeTab, setActiveTabState] = useState<NavTab>('home');
+  const prevUserIdRef = useRef<string | null>(null);
+  const lastAuthTransitionAtRef = useRef<number>(0);
+
+  const setActiveTab = (tab: NavTab) => {
+    if (tab === 'profile' && Date.now() - lastAuthTransitionAtRef.current < 800) {
+      setActiveTabState('home');
+      return;
+    }
+    setActiveTabState(tab);
+  };
+
   const [accentTheme, setAccentThemeState] = useState<AccentTheme>(() => {
     return (localStorage.getItem('nexora_accent_theme') as AccentTheme) || 'emerald';
   });
@@ -114,22 +125,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Authentication State Listener
   useEffect(() => {
     const unsubscribe = AuthService.onAuthStateChanged((authUser) => {
-      setUser((prevUser) => {
-        // If user logged in, logged out, or switched accounts (UID changed), reset user-scoped state and navigate to Home
-        if (prevUser?.id !== authUser?.id) {
-          setWalletAssets(getCleanRealUserWalletAssets());
-          setTransactions([]);
-          setMiningSession(LOGGED_OUT_MINING_SESSION);
-          setUserContracts([]);
-          setDailyStreakRecord(null);
-          setIsOfflineCache(false);
-          setActiveTab('home');
-          if (authUser) {
-            setAuthModalOpen(false);
-          }
+      const nextUid = authUser?.id ?? null;
+      if (prevUserIdRef.current !== nextUid) {
+        prevUserIdRef.current = nextUid;
+        lastAuthTransitionAtRef.current = Date.now();
+        setWalletAssets(getCleanRealUserWalletAssets());
+        setTransactions([]);
+        setMiningSession(LOGGED_OUT_MINING_SESSION);
+        setUserContracts([]);
+        setDailyStreakRecord(null);
+        setIsOfflineCache(false);
+        setActiveTabState('home');
+        if (authUser) {
+          setAuthModalOpen(false);
         }
-        return authUser;
-      });
+      }
+      setUser(authUser);
     });
     return () => {
       unsubscribe();
@@ -1162,9 +1173,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const loginUser = async (email: string, pass: string) => {
     try {
       const logged = await AuthService.login(email, pass);
+      prevUserIdRef.current = logged.id;
+      lastAuthTransitionAtRef.current = Date.now();
       setUser(logged);
       setAuthModalOpen(false);
-      setActiveTab('home');
+      setActiveTabState('home');
       addToast('Welcome Back', `Logged in as ${logged.displayName || logged.email}`, 'success');
     } catch (error: any) {
       const msg = error?.message || 'Login failed. Please check your credentials.';
@@ -1176,9 +1189,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const registerUser = async (email: string, pass: string, name?: string, ref?: string) => {
     try {
       const registered = await AuthService.register(email, pass, name, ref);
+      prevUserIdRef.current = registered.id;
+      lastAuthTransitionAtRef.current = Date.now();
       setUser(registered);
       setAuthModalOpen(false);
-      setActiveTab('home');
+      setActiveTabState('home');
       addToast('Account Created', 'Registration successful! Verification email sent.', 'success');
     } catch (error: any) {
       const msg = error?.message || 'Registration failed. Please check your credentials.';
@@ -1189,14 +1204,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const loginDemoUser = () => {
     const demo = AuthService.loginAsDemo();
+    prevUserIdRef.current = demo.id;
+    lastAuthTransitionAtRef.current = Date.now();
     setUser(demo);
     setAuthModalOpen(false);
-    setActiveTab('home');
+    setActiveTabState('home');
     addToast('Sandbox Demo Mode Active', 'Loaded offline demo session. Not connected to Firebase.', 'warning');
   };
 
   const logoutUser = async () => {
     await AuthService.logout();
+    prevUserIdRef.current = null;
+    lastAuthTransitionAtRef.current = Date.now();
     setUser(null);
     setWalletAssets(getCleanRealUserWalletAssets());
     setTransactions([]);
@@ -1204,7 +1223,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setUserContracts([]);
     setDailyStreakRecord(null);
     setIsOfflineCache(false);
-    setActiveTab('home');
+    setActiveTabState('home');
     addToast('Signed Out', 'You have been logged out of your session.', 'info');
   };
 

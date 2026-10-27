@@ -1,5 +1,6 @@
 import { X, Bell, CheckCircle2, ShieldAlert, Cpu, Sparkles } from 'lucide-react';
 import { GradientIcon } from '../ui/GradientIcon';
+import { useApp } from '../../context/AppContext';
 
 interface NotificationDrawerProps {
   isOpen: boolean;
@@ -7,42 +8,71 @@ interface NotificationDrawerProps {
 }
 
 export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, onClose }) => {
+  const { user, transactions, userContracts } = useApp();
+
   if (!isOpen) return null;
 
-  const notifications = [
+  const demoNotifications = [
     {
       id: 'notif-1',
-      title: 'Daily Cloud Mining Share Distributed',
-      message: '0.000155 BTC (~$14.60) credited from your active BTC cloud mining contract.',
+      title: '[DEMO] Daily Cloud Mining Share Distributed',
+      message: '0.000155 BTC (~$14.60) credited from your simulated BTC cloud mining contract.',
       time: '4 hours ago',
       type: 'payout',
       read: false,
     },
     {
       id: 'notif-2',
-      title: 'Hashrate Status Report',
-      message: 'Cloud mining session operating normally. All active BTC contracts are online.',
+      title: '[DEMO] Hashrate Status Report',
+      message: 'Simulated cloud mining session operating normally in Sandbox Demo Mode.',
       time: '12 hours ago',
       type: 'system',
       read: true,
     },
     {
       id: 'notif-3',
-      title: 'Referral Commission Added',
-      message: 'New active miner joined via your code NEXO-9842. +$15.00 USDT added.',
+      title: '[DEMO] Referral Commission Added',
+      message: 'Simulated partner joined via demo referral code. +$15.00 USDT added in sandbox.',
       time: '16 hours ago',
       type: 'referral',
       read: true,
     },
+  ];
+
+  const realNotifications = [
+    ...(userContracts.length > 0
+      ? [
+          {
+            id: 'notif-contract-active',
+            title: 'Active BTC Cloud Contract Online',
+            message: `${userContracts.length} active contract(s) allocated to your mining session.`,
+            time: 'Live',
+            type: 'system',
+            read: false,
+          },
+        ]
+      : []),
+    ...transactions.slice(0, 3).map((tx) => ({
+      id: `notif-tx-${tx.id}`,
+      title: `${tx.type.replace(/_/g, ' ')} (${tx.status})`,
+      message: `${tx.amount} ${tx.asset} ($${tx.amountUSD.toFixed(2)}) — ${tx.note || tx.status}`,
+      time: tx.timestamp ? new Date(tx.timestamp).toLocaleDateString() : 'Recent',
+      type: tx.status === 'COMPLETED' ? 'payout' : 'system',
+      read: tx.status === 'COMPLETED',
+    })),
     {
-      id: 'notif-4',
-      title: 'Security Notice',
-      message: 'Two-factor authentication (2FA) is recommended to protect your withdrawal operations.',
-      time: '1 day ago',
+      id: 'notif-sec',
+      title: user?.isEmailVerified ? 'Account Email Verified' : 'Email Verification Recommended',
+      message: user?.isEmailVerified
+        ? 'Your Firebase account email is verified and protected.'
+        : 'Verify your email address and enable Two-Factor Authentication (2FA) in Profile settings.',
+      time: 'Account Security',
       type: 'security',
-      read: true,
+      read: Boolean(user?.isEmailVerified),
     },
   ];
+
+  const notifications = user?.isDemo ? demoNotifications : realNotifications;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">

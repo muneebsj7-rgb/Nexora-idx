@@ -1229,12 +1229,61 @@ async function runTests() {
     console.log(
       '✓ Test 12 Passed: firestore.rules verified for isAdmin() RBAC, hashrateGHs mining schema alignment, server-only withdrawal escrow, and financial write blocks'
     );
+
+    // ---------------------------------------------------------------------------
+    // Test 13: Fail-Closed Withdrawal Verification & Post-Login Home Navigation Guard
+    // ---------------------------------------------------------------------------
+    const { WalletFirestoreService } = await import('../src/services/walletService.ts');
+    await assert.rejects(
+      () =>
+        WalletFirestoreService.submitWithdrawalRequest('usr_unauth_test', {
+          assetSymbol: 'USDT',
+          network: 'TRC20 (Tron)',
+          amount: 25,
+          address: 'TQn9Y2khEsLJW1ChVWFMSMeSTow5Kax999',
+          fee: 1.5,
+          usdRate: 1.0,
+        }),
+      /You must be signed in with a real authenticated account/i,
+      'submitWithdrawalRequest must fail closed when no authenticated Firebase user is active'
+    );
+
+    const walletServiceSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/services/walletService.ts'),
+      'utf8'
+    );
+    const submitWithdrawSlice = walletServiceSource.slice(
+      walletServiceSource.indexOf('static async submitWithdrawalRequest')
+    );
+    assert.ok(
+      !submitWithdrawSlice.includes('setDoc('),
+      'submitWithdrawalRequest must not contain any client-side setDoc fallback'
+    );
+
+    const appContextSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/context/AppContext.tsx'),
+      'utf8'
+    );
+    assert.match(
+      appContextSource,
+      /lastAuthTransitionAtRef/,
+      'AppContext must enforce post-login transition guard to prevent landing on Profile screen'
+    );
+    assert.match(
+      appContextSource,
+      /setActiveTabState\('home'\)/,
+      'AppContext must deterministically route login, registration, and auth transitions to Home screen'
+    );
+
+    console.log(
+      '✓ Test 13 Passed: Withdrawals fail closed without client fallback and login transitions deterministically route to Home'
+    );
   } finally {
     resetServerTestHooks();
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
   }
 
-  console.log('\nALL 12 SETTLEMENT, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
+  console.log('\nALL 13 SETTLEMENT, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
 }
 
 runTests().catch((err) => {
