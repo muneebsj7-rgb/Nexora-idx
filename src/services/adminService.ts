@@ -22,6 +22,7 @@ export interface AdminSetupStatus {
 
 export const KNOWN_ADMIN_EMAILS = [
   'muneebsj7@gmail.com',
+  'procurement.initialsaudi@gmail.com',
 ];
 
 async function getAdminAuthHeaders(): Promise<Record<string, string>> {

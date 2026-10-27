@@ -136,164 +136,197 @@ export class AuthService {
     }
   }
 
+  private static pendingProfilePromises = new Map<string, Promise<UserProfile>>();
+
   /**
    * Ensures that the authenticated user has a real document in Cloud Firestore at users/{uid}.
-   * If the document does not exist (e.g. initial registration or prior failure), creates it.
-   * If Firestore is transiently offline, falls back to local Firestore cache or stored profile
-   * ONLY for genuine offline/unavailable errors — never suppressing permission-denied or auth errors.
+   * Deduplicates concurrent calls per UID (e.g. login/register racing with onAuthStateChanged)
+   * so two concurrent calls never race on initial document creation.
    */
   static async ensureUserProfileDocument(
     fbUser: FirebaseUser,
     extra?: { displayName?: string; referredBy?: string }
   ): Promise<UserProfile> {
-    if (!db) {
-      throw new Error(
-        'Cloud Firestore is not initialized. Please verify your VITE_FIREBASE_* environment configuration.'
-      );
+    const existingInFlight = this.pendingProfilePromises.get(fbUser.uid);
+    if (existingInFlight && !extra?.displayName && !extra?.referredBy) {
+      return existingInFlight;
     }
 
-    const fallbackCode = `NEXO-${fbUser.uid.substring(0, 4).toUpperCase()}`;
-    const cleanName =
-      extra?.displayName?.trim() ||
-      fbUser.displayName ||
-      (fbUser.email ? fbUser.email.split('@')[0] : 'Miner');
-
-    const userDocRef = doc(db, 'users', fbUser.uid);
-    let userDocSnap;
-    try {
-      userDocSnap = await getDoc(userDocRef);
-    } catch (readError) {
-      if (isExpectedOfflineError(readError)) {
+    const runEnsure = async (): Promise<UserProfile> => {
+      if (existingInFlight) {
         try {
-          userDocSnap = await getDocFromCache(userDocRef);
+          await existingInFlight;
         } catch {
-          // Document not yet present in local IndexedDB cache while client is offline.
-          // Preserve only safe non-privileged attributes if they belong to the exact same UID.
-          const cachedSession =
-            this.currentUser && !this.currentUser.isDemo && this.currentUser.id === fbUser.uid
-              ? this.currentUser
-              : null;
-          const offlineProfile: UserProfile = {
-            id: fbUser.uid,
-            email: fbUser.email || cachedSession?.email || '',
-            displayName: cachedSession?.displayName || cleanName,
-            // Authoritative email verification comes strictly from live FirebaseUser token state
-            isEmailVerified: Boolean(fbUser.emailVerified),
-            kycTier: cachedSession?.kycTier || 'None',
-            createdAt: cachedSession?.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
-            avatarUrl: cachedSession?.avatarUrl || fbUser.photoURL || undefined,
-            referralCode: cachedSession?.referralCode || fallbackCode,
-            referredBy: extra?.referredBy?.trim() || cachedSession?.referredBy,
-            twoFactorEnabled: cachedSession?.twoFactorEnabled ?? false,
-            currency: cachedSession?.currency || 'USD',
-            accentTheme: cachedSession?.accentTheme || 'emerald',
-            isDemo: false,
-            authProvider: 'firebase',
-            isAdmin: false,
-          };
-          return offlineProfile;
+          // Proceed with fresh attempt if prior in-flight failed
         }
-      } else {
-        console.warn(
-          `Firestore read error for users/${fbUser.uid}:`,
-          sanitizeDiagnosticMessage((readError as any)?.message)
-        );
-        throw formatFirebaseError(readError);
       }
-    }
 
-    if (!userDocSnap.exists()) {
-      // Document does not exist in Cloud Firestore — create users/{uid} now
-      const initialProfile: UserProfile = {
+      if (!db) {
+        throw new Error(
+          'Cloud Firestore is not initialized. Please verify your VITE_FIREBASE_* environment configuration.'
+        );
+      }
+
+      const fallbackCode = `NEXO-${fbUser.uid.substring(0, 4).toUpperCase()}`;
+      const cleanName = (
+        extra?.displayName?.trim() ||
+        fbUser.displayName ||
+        (fbUser.email ? fbUser.email.split('@')[0] : 'Miner')
+      ).slice(0, 80);
+
+      const userDocRef = doc(db, 'users', fbUser.uid);
+      let userDocSnap;
+      try {
+        userDocSnap = await getDoc(userDocRef);
+      } catch (readError) {
+        if (isExpectedOfflineError(readError)) {
+          try {
+            userDocSnap = await getDocFromCache(userDocRef);
+          } catch {
+            const cachedSession =
+              this.currentUser && !this.currentUser.isDemo && this.currentUser.id === fbUser.uid
+                ? this.currentUser
+                : null;
+            const offlineProfile: UserProfile = {
+              id: fbUser.uid,
+              email: fbUser.email || cachedSession?.email || '',
+              displayName: cachedSession?.displayName || cleanName,
+              isEmailVerified: Boolean(fbUser.emailVerified),
+              kycTier: cachedSession?.kycTier || 'None',
+              createdAt: cachedSession?.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
+              avatarUrl: cachedSession?.avatarUrl || fbUser.photoURL || undefined,
+              referralCode: cachedSession?.referralCode || fallbackCode,
+              referredBy: extra?.referredBy?.trim() || cachedSession?.referredBy,
+              twoFactorEnabled: cachedSession?.twoFactorEnabled ?? false,
+              currency: cachedSession?.currency || 'USD',
+              accentTheme: cachedSession?.accentTheme || 'emerald',
+              isDemo: false,
+              authProvider: 'firebase',
+              isAdmin: false,
+            };
+            return offlineProfile;
+          }
+        } else {
+          console.warn(
+            `Firestore read error for users/${fbUser.uid}:`,
+            sanitizeDiagnosticMessage((readError as any)?.message)
+          );
+          throw formatFirebaseError(readError);
+        }
+      }
+
+      if (!userDocSnap.exists()) {
+        // Document does not exist in Cloud Firestore — create users/{uid} now
+        const initialProfile: UserProfile = {
+          id: fbUser.uid,
+          email: fbUser.email || '',
+          displayName: cleanName,
+          isEmailVerified: Boolean(fbUser.emailVerified),
+          kycTier: 'None',
+          createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+          avatarUrl: fbUser.photoURL || undefined,
+          referralCode: fallbackCode,
+          referredBy: extra?.referredBy?.trim() || undefined,
+          twoFactorEnabled: false,
+          currency: 'USD',
+          accentTheme: 'emerald',
+          isDemo: false,
+          authProvider: 'firebase',
+          isAdmin: false,
+        };
+
+        try {
+          await setDoc(userDocRef, {
+            id: initialProfile.id,
+            email: initialProfile.email,
+            displayName: initialProfile.displayName,
+            isEmailVerified: initialProfile.isEmailVerified,
+            kycTier: 'None',
+            createdAt: initialProfile.createdAt,
+            avatarUrl: initialProfile.avatarUrl || null,
+            referralCode: initialProfile.referralCode,
+            referredBy: initialProfile.referredBy || null,
+            twoFactorEnabled: initialProfile.twoFactorEnabled,
+            currency: initialProfile.currency,
+            accentTheme: initialProfile.accentTheme,
+            updatedAt: serverTimestamp(),
+          });
+          return initialProfile;
+        } catch (writeError) {
+          if (isExpectedOfflineError(writeError)) {
+            return initialProfile;
+          }
+          console.warn(
+            `Failed to create Firestore profile users/${fbUser.uid}:`,
+            sanitizeDiagnosticMessage((writeError as any)?.message)
+          );
+          throw formatFirebaseError(writeError);
+        }
+      }
+
+      // Document exists — hydrate profile and sync verified email or explicit displayName override if needed
+      const firestoreData = userDocSnap.data() as Partial<UserProfile>;
+      const syncPatch: Record<string, any> = {};
+
+      if (fbUser.emailVerified && !firestoreData.isEmailVerified) {
+        syncPatch.isEmailVerified = true;
+        firestoreData.isEmailVerified = true;
+      }
+      if (extra?.displayName?.trim() && extra.displayName.trim() !== firestoreData.displayName) {
+        syncPatch.displayName = extra.displayName.trim().slice(0, 80);
+        firestoreData.displayName = syncPatch.displayName;
+      }
+
+      if (Object.keys(syncPatch).length > 0) {
+        try {
+          await setDoc(
+            userDocRef,
+            {
+              ...syncPatch,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (syncErr) {
+          console.warn(
+            'Could not sync profile update to Firestore:',
+            sanitizeDiagnosticMessage((syncErr as any)?.message)
+          );
+        }
+      }
+
+      // Security invariant: `isEmailVerified` is governed by live Firebase Auth (`fbUser.emailVerified`),
+      // never elevated by a stale cached document, and `isAdmin` is never granted from Firestore profile docs.
+      const hydratedProfile: UserProfile = {
         id: fbUser.uid,
-        email: fbUser.email || '',
-        displayName: cleanName,
+        email: fbUser.email || firestoreData.email || '',
+        displayName: firestoreData.displayName || fbUser.displayName || cleanName,
         isEmailVerified: Boolean(fbUser.emailVerified),
-        kycTier: 'None',
-        createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
-        avatarUrl: fbUser.photoURL || undefined,
-        referralCode: fallbackCode,
-        referredBy: extra?.referredBy?.trim() || undefined,
-        twoFactorEnabled: false,
-        currency: 'USD',
-        accentTheme: 'emerald',
+        kycTier: firestoreData.kycTier || 'None',
+        createdAt: firestoreData.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
+        avatarUrl: firestoreData.avatarUrl || fbUser.photoURL || undefined,
+        referralCode: firestoreData.referralCode || fallbackCode,
+        referredBy: firestoreData.referredBy || undefined,
+        twoFactorEnabled: firestoreData.twoFactorEnabled ?? false,
+        currency: firestoreData.currency || 'USD',
+        accentTheme: firestoreData.accentTheme || 'emerald',
         isDemo: false,
         authProvider: 'firebase',
         isAdmin: false,
       };
 
-      try {
-        await setDoc(userDocRef, {
-          id: initialProfile.id,
-          email: initialProfile.email,
-          displayName: initialProfile.displayName,
-          isEmailVerified: initialProfile.isEmailVerified,
-          kycTier: 'None',
-          createdAt: initialProfile.createdAt,
-          avatarUrl: initialProfile.avatarUrl || null,
-          referralCode: initialProfile.referralCode,
-          referredBy: initialProfile.referredBy || null,
-          twoFactorEnabled: initialProfile.twoFactorEnabled,
-          currency: initialProfile.currency,
-          accentTheme: initialProfile.accentTheme,
-          updatedAt: serverTimestamp(),
-        });
-        return initialProfile;
-      } catch (writeError) {
-        if (isExpectedOfflineError(writeError)) {
-          return initialProfile;
-        }
-        console.warn(
-          `Failed to create Firestore profile users/${fbUser.uid}:`,
-          sanitizeDiagnosticMessage((writeError as any)?.message)
-        );
-        throw formatFirebaseError(writeError);
-      }
-    }
-
-    // Document exists — hydrate profile and sync verified email if status changed in Auth
-    const firestoreData = userDocSnap.data() as Partial<UserProfile>;
-
-    if (fbUser.emailVerified && !firestoreData.isEmailVerified) {
-      try {
-        await setDoc(
-          userDocRef,
-          {
-            isEmailVerified: true,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-        firestoreData.isEmailVerified = true;
-      } catch (syncErr) {
-        console.warn(
-          'Could not sync verified email status to Firestore:',
-          sanitizeDiagnosticMessage((syncErr as any)?.message)
-        );
-      }
-    }
-
-    // Security invariant: `isEmailVerified` is governed by live Firebase Auth (`fbUser.emailVerified`),
-    // never elevated by a stale cached document, and `isAdmin` is never granted from Firestore profile docs.
-    const hydratedProfile: UserProfile = {
-      id: fbUser.uid,
-      email: fbUser.email || firestoreData.email || '',
-      displayName: firestoreData.displayName || fbUser.displayName || cleanName,
-      isEmailVerified: Boolean(fbUser.emailVerified),
-      kycTier: firestoreData.kycTier || 'None',
-      createdAt: firestoreData.createdAt || fbUser.metadata.creationTime || new Date().toISOString(),
-      avatarUrl: firestoreData.avatarUrl || fbUser.photoURL || undefined,
-      referralCode: firestoreData.referralCode || fallbackCode,
-      referredBy: firestoreData.referredBy,
-      twoFactorEnabled: firestoreData.twoFactorEnabled ?? false,
-      currency: firestoreData.currency || 'USD',
-      accentTheme: firestoreData.accentTheme || 'emerald',
-      isDemo: false,
-      authProvider: 'firebase',
-      isAdmin: false,
+      return hydratedProfile;
     };
 
-    return hydratedProfile;
+    const trackedPromise = runEnsure();
+    this.pendingProfilePromises.set(fbUser.uid, trackedPromise);
+    try {
+      return await trackedPromise;
+    } finally {
+      if (this.pendingProfilePromises.get(fbUser.uid) === trackedPromise) {
+        this.pendingProfilePromises.delete(fbUser.uid);
+      }
+    }
   }
 
   /**

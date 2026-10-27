@@ -39,6 +39,7 @@ const PORT = process.env.NODE_ENV === 'production' && process.env.PORT
 const ADMIN_EMAILS = Array.from(
   new Set([
     'muneebsj7@gmail.com',
+    'procurement.initialsaudi@gmail.com',
     ...(process.env.ADMIN_EMAILS
       ? sanitizeEnv(process.env.ADMIN_EMAILS)
           .split(',')
@@ -165,7 +166,18 @@ async function verifyFirebaseBearerToken(token: string): Promise<AuthenticatedCa
       const emailVerified = decoded.email_verified === true;
       const hasCustomAdminClaim = decoded.admin === true;
       const isAllowlistedAdmin = Boolean(email) && ADMIN_EMAILS.includes(email);
-      const isAdmin = emailVerified && (hasCustomAdminClaim || isAllowlistedAdmin);
+      let isAdmin = emailVerified && (hasCustomAdminClaim || isAllowlistedAdmin);
+
+      if (emailVerified && !isAdmin) {
+        try {
+          const adminDoc = await getActiveFirestore().doc(`admins/${decoded.uid}`).get();
+          if (adminDoc && adminDoc.exists) {
+            isAdmin = true;
+          }
+        } catch {
+          // ignore if Firestore lookup fails
+        }
+      }
 
       return {
         uid: decoded.uid,

@@ -61,7 +61,7 @@ export const INITIAL_WALLET_ASSETS: WalletAsset[] = [
     networks: ['Solana Mainnet-Beta'],
     depositAddress: 'Nex9soLmine7W9p2KmxV4q92KmxV92Lpoe931sL',
     minDeposit: 0.1,
-    minWithdraw: 0.2,
+    minWithdraw: 0.25,
     withdrawFee: 0.01,
   },
   {
@@ -73,11 +73,25 @@ export const INITIAL_WALLET_ASSETS: WalletAsset[] = [
     iconBg: 'bg-sky-500/20 text-sky-400 border-sky-500/30',
     networks: ['Litecoin Core'],
     depositAddress: 'ltc1qnxoraminedeposit48375910248ltc',
-    minDeposit: 0.05,
-    minWithdraw: 0.1,
+    minDeposit: 0.1,
+    minWithdraw: 0.2,
     withdrawFee: 0.005,
   }
 ];
+
+/**
+ * Returns a clean, zero-balance wallet asset template for real authenticated users
+ * and logged-out visitors. Sample deposit addresses and demo balances are stripped
+ * so real users never see simulated custodial addresses or demo funds.
+ */
+export function getCleanRealUserWalletAssets(): WalletAsset[] {
+  return INITIAL_WALLET_ASSETS.map((asset) => ({
+    ...asset,
+    balance: 0,
+    lockedBalance: 0,
+    depositAddress: '',
+  }));
+}
 
 export const INITIAL_TRANSACTIONS: Transaction[] = [
   {
@@ -485,90 +499,49 @@ export class WalletFirestoreService {
     const netPayoutAmount = Number((params.amount - params.fee).toFixed(8));
 
     // 1. Primary path: Reserve withdrawal funds into `lockedBalance` via server-side atomic transaction
-    if (auth?.currentUser) {
-      try {
-        const token = await auth.currentUser.getIdToken();
-        const resp = await fetch('/api/wallet/withdraw', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            assetSymbol: cleanSymbol,
-            network: params.network,
-            amount: params.amount,
-            fee: params.fee,
-            address: params.address.trim(),
-            usdRate: params.usdRate,
-          }),
-        });
-
-        const data = await resp.json().catch(() => ({}));
-        if (resp.ok && data.success && data.transaction) {
-          return {
-            ...data.transaction,
-            isDemo: false,
-          } as Transaction;
-        }
-
-        // If server rejected due to insufficient balance or validation error, surface it immediately
-        if (resp.status !== 503 && data.code !== 'MISSING_ADMIN_CREDENTIALS') {
-          throw new Error(data.error || `Withdrawal failed (HTTP ${resp.status})`);
-        }
-      } catch (err: any) {
-        if (
-          err instanceof Error &&
-          !err.message.includes('Failed to fetch') &&
-          !err.message.includes('NetworkError')
-        ) {
-          throw err;
-        }
-      }
+    if (!auth?.currentUser) {
+      throw new Error('You must be signed in with a real authenticated account to submit a withdrawal request.');
     }
 
-    // 2. Fallback path when server Admin SDK lacks credentials: write pending request via client SDK
-    const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const txDocRef = doc(db, 'users', uid, 'transactions', txId);
-
-    const newTx: Transaction = {
-      id: txId,
-      userId: uid,
-      type: 'WITHDRAWAL',
-      asset: cleanSymbol,
-      amount: params.amount,
-      amountUSD: Number((params.amount * params.usdRate).toFixed(2)),
-      fee: params.fee,
-      netPayoutAmount,
-      status: 'PENDING_REVIEW',
-      timestamp: new Date().toISOString(),
-      network: params.network,
-      toAddress: params.address.trim(),
-      note: `Withdrawal Request (${netPayoutAmount} ${cleanSymbol} net after ${params.fee} ${cleanSymbol} fee)`,
-      isDemo: false,
-    };
-
+    const token = await auth.currentUser.getIdToken();
+    let resp: Response;
     try {
-      await setDoc(txDocRef, {
-        id: newTx.id,
-        userId: uid,
-        type: newTx.type,
-        asset: newTx.asset,
-        amount: newTx.amount,
-        amountUSD: newTx.amountUSD,
-        fee: newTx.fee,
-        netPayoutAmount: newTx.netPayoutAmount,
-        status: newTx.status,
-        timestamp: newTx.timestamp,
-        network: newTx.network,
-        toAddress: newTx.toAddress,
-        note: newTx.note,
-        createdAt: serverTimestamp(),
+      resp = await fetch('/api/wallet/withdraw', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          assetSymbol: cleanSymbol,
+          network: params.network,
+          amount: params.amount,
+          fee: params.fee,
+          address: params.address.trim(),
+          usdRate: params.usdRate,
+        }),
       });
-      return newTx;
-    } catch (error) {
-      console.warn(`Error writing users/${uid}/transactions/${txId}:`, error);
-      throw formatFirestoreWalletError(error, 'submitting withdrawal request');
+    } catch (err: any) {
+      throw new Error(
+        'Unable to reach the settlement server to reserve withdrawal funds. For your financial safety, withdrawals require atomic server-side escrow and cannot be queued offline.'
+      );
     }
+
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.success && data.transaction) {
+      return {
+        ...data.transaction,
+        isDemo: false,
+      } as Transaction;
+    }
+
+    if (resp.status === 503 || data.code === 'MISSING_ADMIN_CREDENTIALS') {
+      throw new Error(
+        data.error ||
+          'Server-side settlement credentials (FIREBASE_SERVICE_ACCOUNT_JSON) are not configured. Real-user withdrawals are disabled until atomic server-side balance escrow is active.'
+      );
+    }
+
+    throw new Error(data.error || `Withdrawal request failed (HTTP ${resp.status})`);
   }
 }

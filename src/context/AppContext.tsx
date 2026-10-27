@@ -3,7 +3,7 @@ import { UserProfile, CryptoMarket, MiningSession, MiningContract, WalletAsset, 
 import { AuthService } from '../services/authService';
 import { fetchLiveMarketTickers, subscribeMarketTickersWebSocket, SUPPORTED_BINANCE_PAIRS } from '../services/marketService';
 import { INITIAL_MINING_SESSION, MINING_PLANS, MiningFirestoreService } from '../services/miningService';
-import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService } from '../services/walletService';
+import { INITIAL_WALLET_ASSETS, INITIAL_TRANSACTIONS, WalletFirestoreService, getCleanRealUserWalletAssets } from '../services/walletService';
 import { INITIAL_DAILY_REWARDS, INITIAL_EARN_TASKS, DailyRewardsFirestoreService } from '../services/earnService';
 import confetti from 'canvas-confetti';
 
@@ -97,9 +97,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [miningSession, setMiningSession] = useState<MiningSession>(LOGGED_OUT_MINING_SESSION);
   const [userContracts, setUserContracts] = useState<MiningContract[]>([]);
   const [isOfflineCache, setIsOfflineCache] = useState<boolean>(false);
-  const [walletAssets, setWalletAssets] = useState<WalletAsset[]>(
-    INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 }))
-  );
+  const [walletAssets, setWalletAssets] = useState<WalletAsset[]>(() => getCleanRealUserWalletAssets());
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [dailyRewards, setDailyRewards] = useState<DailyReward[]>(
     INITIAL_DAILY_REWARDS.map((r, idx) => ({ ...r, isClaimed: false, isToday: idx === 0 }))
@@ -117,14 +115,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     const unsubscribe = AuthService.onAuthStateChanged((authUser) => {
       setUser((prevUser) => {
-        // If user logged out or switched accounts (UID changed), immediately wipe user-scoped state
+        // If user logged in, logged out, or switched accounts (UID changed), reset user-scoped state and navigate to Home
         if (prevUser?.id !== authUser?.id) {
-          setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+          setWalletAssets(getCleanRealUserWalletAssets());
           setTransactions([]);
           setMiningSession(LOGGED_OUT_MINING_SESSION);
           setUserContracts([]);
           setDailyStreakRecord(null);
           setIsOfflineCache(false);
+          setActiveTab('home');
+          if (authUser) {
+            setAuthModalOpen(false);
+          }
         }
         return authUser;
       });
@@ -161,8 +163,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Real-time Firestore sync for Wallet Balances, Transactions, Mining Session, Contracts & Daily Streak
   useEffect(() => {
     if (user && !user.isDemo) {
-      // Baseline for real authenticated accounts: 0.00 until funded and confirmed
-      setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+      // Baseline for real authenticated accounts: 0.00 and empty deposit addresses until funded/configured
+      setWalletAssets(getCleanRealUserWalletAssets());
       setTransactions([]);
       setMiningSession(LOGGED_OUT_MINING_SESSION);
       setUserContracts([]);
@@ -291,8 +293,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setDailyStreakRecord(null);
       setIsOfflineCache(false);
     } else {
-      // Logged-out visitor: zeroed balances, empty transactions, idle session
-      setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+      // Logged-out visitor: zeroed balances, empty deposit addresses, empty transactions, idle session
+      setWalletAssets(getCleanRealUserWalletAssets());
       setTransactions([]);
       setMiningSession(LOGGED_OUT_MINING_SESSION);
       setUserContracts([]);
@@ -711,41 +713,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
-    setEarnTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: 'CLAIMED' } : t))
-    );
-
-    try {
-      confetti({ particleCount: 50, spread: 50, origin: { y: 0.7 } });
-    } catch {
-      // ignore
-    }
-
     if (!user.isDemo) {
       try {
         await DailyRewardsFirestoreService.claimTaskReward(user.id, task.id);
+        setEarnTasks((prev) =>
+          prev.map((t) => (t.id === taskId ? { ...t, status: 'CLAIMED' } : t))
+        );
+        try {
+          confetti({ particleCount: 50, spread: 50, origin: { y: 0.7 } });
+        } catch {
+          // ignore
+        }
         addToast(
           'Bounty Submitted',
           `Bounty for "${task.title}" saved in Firestore as PENDING_REVIEW. Client balance crediting is blocked; requires trusted verification.`,
           'info'
         );
       } catch (err: any) {
-        const isPermissionDenied =
-          err?.code === 'permission-denied' ||
-          (typeof err?.message === 'string' && err.message.includes('permission'));
-        if (isPermissionDenied) {
-          console.warn('Note: Firestore rules unpublished in console; task reward recorded in current session.');
-          addToast(
-            'Bounty Recorded (Session)',
-            `Bounty for "${task.title}" recorded in active session. Deploy local firestore.rules to your Firebase Console to persist across devices.`,
-            'info'
-          );
-        } else {
-          console.warn('Error submitting task reward request:', err);
-          addToast('Bounty Request Notice', err?.message || 'Could not record bounty request in Firestore.', 'error');
-        }
+        console.warn('Error submitting task reward request:', err);
+        addToast('Bounty Request Error', err?.message || 'Could not record bounty request in Firestore.', 'error');
       }
     } else {
+      setEarnTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: 'CLAIMED' } : t))
+      );
+      try {
+        confetti({ particleCount: 50, spread: 50, origin: { y: 0.7 } });
+      } catch {
+        // ignore
+      }
       // Demo sandbox simulation
       setWalletAssets((prev) =>
         prev.map((asset) => {
@@ -1202,7 +1198,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const logoutUser = async () => {
     await AuthService.logout();
     setUser(null);
-    setWalletAssets(INITIAL_WALLET_ASSETS.map((a) => ({ ...a, balance: 0, lockedBalance: 0 })));
+    setWalletAssets(getCleanRealUserWalletAssets());
     setTransactions([]);
     setMiningSession(LOGGED_OUT_MINING_SESSION);
     setUserContracts([]);

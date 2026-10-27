@@ -3,7 +3,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global helper primitives
+    // =========================================================================
+    // Helper Functions
+    // =========================================================================
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -12,437 +14,470 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128;
+    function isAdmin() {
+      return isAuthenticated() &&
+             request.auth.token.email_verified == true &&
+             (
+               request.auth.token.admin == true ||
+               exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+             );
     }
 
-    /**
-     * Validates that a numeric value is a non-negative integer (>= 0).
-     *
-     * Handles both native CEL int representations and IEEE-754 numbers
-     * serialized across the network by the JavaScript Firestore SDK:
-     * - Checks (n is int || (n is number && int(n) == n)) to reject decimals.
-     * - Enforces n >= 0 to reject negative numbers.
-     */
-    function isNonNegativeInteger(n) {
-      return (n is int || (n is number && int(n) == n)) && n >= 0;
+    function isSupportedAsset(symbol) {
+      return symbol in ['USDT', 'BTC', 'ETH', 'SOL', 'LTC'];
     }
 
-    /**
-     * User profiles collection: /users/{userId}
-     *
-     * Security constraints:
-     * 1. Private access: Authenticated owner can only read their own document.
-     * 2. Creation safeguards:
-     *    - Document ID must match request.auth.uid.
-     *    - User cannot grant themselves administrative privileges (isAdmin must not be present or false).
-     *    - kycTier must not be present or must default strictly to 'None'.
-     *    - isEmailVerified must be false or match request.auth.token.email_verified.
-     *    - Keys are restricted to permitted profile fields only.
-     * 3. Update safeguards:
-     *    - Client cannot alter id, createdAt, kycTier, or isAdmin.
-     *    - isEmailVerified can only be updated if it equals request.auth.token.email_verified.
-     *    - Affected keys are restricted to safe client preference fields.
-     * 4. Deletion: Forbidden from client SDK.
-     */
+    function isOfficialRewardAmount(amt) {
+      return amt in [0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.5, 5.0, 6.0, 8.5, 10.0, 12.0, 25.0, 50.0];
+    }
+
+    function isOfficialDailyRewardForDay(day, amt) {
+      return (day == 1 && amt == 0.5) ||
+             (day == 2 && amt == 0.75) ||
+             (day == 3 && amt == 1.0) ||
+             (day == 4 && amt == 1.5) ||
+             (day == 5 && amt == 2.0) ||
+             (day == 6 && amt == 3.0) ||
+             (day == 7 && amt == 5.0);
+    }
+
+    function isOfficialTaskRewardForId(taskId, amt) {
+      return (taskId == 'task_telegram' && amt == 2.0) ||
+             (taskId == 'task_2fa' && amt == 3.0) ||
+             (taskId == 'task_verify_email' && amt == 1.5) ||
+             (taskId == 'task_mine_24h' && amt == 5.0) ||
+             (taskId == 'task_refer_friend' && amt == 10.0) ||
+             (taskId == 'task_first_mine' && amt == 1.5) ||
+             (taskId == 'task_referral_1' && amt == 5.0) ||
+             (taskId == 'task_deposit_first' && amt == 10.0) ||
+             (taskId == 't1' && amt == 5.0) ||
+             (taskId == 't2' && amt == 10.0) ||
+             (taskId == 't3' && amt == 50.0) ||
+             (taskId == 't4' && amt == 2.5) ||
+             (taskId == 't5' && amt == 25.0);
+    }
+
+    function meetsMinDeposit(symbol, amt) {
+      return (symbol == 'USDT' && amt >= 10) ||
+             (symbol == 'BTC' && amt >= 0.0005) ||
+             (symbol == 'ETH' && amt >= 0.01) ||
+             (symbol == 'SOL' && amt >= 0.1) ||
+             (symbol == 'LTC' && amt >= 0.1);
+    }
+
+    // Returns true if the request payload contains any server-only settlement or privilege fields
+    function hasForbiddenSettlementFields(data) {
+      return data.keys().hasAny([
+        'walletCredited',
+        'walletSettled',
+        'settlementId',
+        'settlementStatus',
+        'creditedAmount',
+        'creditedAsset',
+        'creditedAt',
+        'approvedBy',
+        'approvedAt',
+        'rejectedBy',
+        'rejectedAt',
+        'rejectionReason',
+        'refunded',
+        'refundedAt',
+        'reservedFromBalance',
+        'payoutProcessed',
+        'payoutSettledAt',
+        'balance',
+        'lockedBalance',
+        'isAdmin',
+        'role',
+        'admin'
+      ]);
+    }
+
+    // =========================================================================
+    // 0. Administrators Registry: admins/{adminId}
+    //    - Read-only for the administrator or other verified admins
+    //    - Strictly server-written (Admin SDK only)
+    // =========================================================================
+    match /admins/{adminId} {
+      allow read: if isOwner(adminId) || isAdmin();
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 1. User Profile Document: users/{userId}
+    // =========================================================================
     match /users/{userId} {
-      allow read: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin();
 
+      // Users can create their own initial profile document upon registration/login
       allow create: if isOwner(userId)
-        && isValidId(userId)
-        && request.resource.data.id == userId
-        && (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false)
-        && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == 'None')
-        && (
-          !('isEmailVerified' in request.resource.data)
-          || request.resource.data.isEmailVerified == false
-          || request.resource.data.isEmailVerified == request.auth.token.email_verified
-        )
-        && request.resource.data.keys().hasOnly([
-          'id',
-          'email',
-          'displayName',
-          'isEmailVerified',
-          'kycTier',
-          'isAdmin',
-          'createdAt',
-          'avatarUrl',
-          'referralCode',
-          'referredBy',
-          'twoFactorEnabled',
-          'currency',
-          'accentTheme',
-          'updatedAt'
-        ]);
+                    && !hasForbiddenSettlementFields(request.resource.data)
+                    && request.resource.data.keys().hasOnly([
+                      'id',
+                      'email',
+                      'displayName',
+                      'isEmailVerified',
+                      'kycTier',
+                      'createdAt',
+                      'avatarUrl',
+                      'referralCode',
+                      'referredBy',
+                      'twoFactorEnabled',
+                      'biometricsEnabled',
+                      'notificationsEnabled',
+                      'currency',
+                      'accentTheme',
+                      'updatedAt'
+                    ])
+                    && request.resource.data.id == userId
+                    && request.resource.data.email is string
+                    && request.resource.data.email.size() <= 254
+                    && (!('email' in request.auth.token) || request.resource.data.email == request.auth.token.email)
+                    && request.resource.data.displayName is string
+                    && request.resource.data.displayName.size() >= 1
+                    && request.resource.data.displayName.size() <= 80
+                    && (!('referralCode' in request.resource.data) || (request.resource.data.referralCode is string && request.resource.data.referralCode.size() <= 32))
+                    && (!('referredBy' in request.resource.data) || request.resource.data.referredBy == null || (request.resource.data.referredBy is string && request.resource.data.referredBy.size() <= 32))
+                    && (!('avatarUrl' in request.resource.data) || request.resource.data.avatarUrl == null || (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 512))
+                    // Prevent setting kycTier to anything other than 'None' from client
+                    && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == 'None')
+                    // Prevent spoofing email verification from client unless Auth token confirms it
+                    && (!('isEmailVerified' in request.resource.data)
+                        || request.resource.data.isEmailVerified == false
+                        || request.auth.token.email_verified == true);
 
+      // Users can update only safe profile & display preferences.
+      // Immutable fields: id, email, createdAt, referralCode, referredBy, kycTier, isAdmin.
       allow update: if isOwner(userId)
-        && isValidId(userId)
-        && (!('id' in request.resource.data) || request.resource.data.id == resource.data.id)
-        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == resource.data.createdAt)
-        && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == resource.data.kycTier)
-        && (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == resource.data.isAdmin)
-        && (
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isEmailVerified'])
-          || request.resource.data.isEmailVerified == request.auth.token.email_verified
-        )
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'id',
-          'displayName',
-          'avatarUrl',
-          'referralCode',
-          'referredBy',
-          'twoFactorEnabled',
-          'currency',
-          'accentTheme',
-          'updatedAt',
-          'isEmailVerified'
-        ]);
+                    && !hasForbiddenSettlementFields(request.resource.data)
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                      'displayName',
+                      'avatarUrl',
+                      'twoFactorEnabled',
+                      'biometricsEnabled',
+                      'notificationsEnabled',
+                      'currency',
+                      'accentTheme',
+                      'isEmailVerified',
+                      'updatedAt'
+                    ])
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.email == resource.data.email
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.displayName is string
+                    && request.resource.data.displayName.size() >= 1
+                    && request.resource.data.displayName.size() <= 80
+                    && (!('avatarUrl' in request.resource.data) || request.resource.data.avatarUrl == null || (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 512))
+                    && (!('kycTier' in request.resource.data) || request.resource.data.kycTier == resource.data.kycTier)
+                    // Allow syncing isEmailVerified to true ONLY when Firebase Auth token is verified
+                    && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['isEmailVerified'])
+                        || (request.resource.data.isEmailVerified == true && request.auth.token.email_verified == true));
 
       allow delete: if false;
 
-      /**
-       * Wallet balance subcollection: /users/{userId}/wallet/{assetSymbol}
-       *
-       * Financial Security Constraints:
-       * 1. Read: Authenticated owner can read only their own asset balances.
-       * 2. Write (create, update, delete): Strictly FORBIDDEN from client SDK.
-       *    Clients can never modify, credit, debit, or tamper with wallet balances.
-       *    Balance adjustments can ONLY be performed by trusted backend services
-       *    (e.g., Firebase Cloud Functions using the Firebase Admin SDK)
-       *    after blockchain confirmations or compliance verification.
-       */
+      // =======================================================================
+      // 2. Wallet Balances Subcollection: users/{userId}/wallet/{assetSymbol}
+      //    - READ-ONLY for the authenticated owner (and verified admin)
+      //    - Client-side creation, balance modification, or deletion is BLOCKED
+      //    - Only trusted backend / Firebase Admin SDK can modify balances
+      // =======================================================================
       match /wallet/{assetSymbol} {
-        allow read: if isOwner(userId);
-        allow write: if false;
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
       }
 
-      /**
-       * Transactions subcollection: /users/{userId}/transactions/{transactionId}
-       *
-       * Financial Security Constraints:
-       * 1. Read: Authenticated owner can read only their own transaction records.
-       * 2. Create: Authenticated owner can submit pending transaction requests only.
-       *    - Must specify userId matching request.auth.uid.
-       *    - Amount must be a positive number (> 0).
-       *    - Type must be either 'DEPOSIT', 'WITHDRAWAL', or 'TASK_REWARD'.
-       *      Clients CANNOT self-credit mining payouts or referral bonuses.
-       *    - DEPOSIT requests must strictly have status 'PENDING_CONFIRMATION'.
-       *    - WITHDRAWAL requests must strictly have status 'PENDING_REVIEW'.
-       *    - TASK_REWARD requests must strictly have status 'PENDING_REVIEW'.
-       *    - Client cannot mark any transaction as 'COMPLETED' or 'FAILED'.
-       *    - Explicit allowlist of allowed request fields.
-       *    - Clients cannot supply verification/approval metadata or walletCredited flags.
-       * 3. Update: Strictly FORBIDDEN from client SDK. Users cannot alter submitted
-       *    requests, change amounts, or approve their own transactions.
-       * 4. Delete: Strictly FORBIDDEN from client SDK to preserve audit trails.
-       */
+      // =======================================================================
+      // 3. Settlements Audit Subcollection: users/{userId}/settlements/{settlementId}
+      //    - READ-ONLY for the authenticated owner (and verified admin)
+      //    - Written exclusively by server-side Admin SDK / Cloud Functions
+      // =======================================================================
+      match /settlements/{settlementId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
+      }
+
+      // =======================================================================
+      // 4. Transactions Subcollection: users/{userId}/transactions/{transactionId}
+      //    - Owner can read their own transaction history
+      //    - Owner can ONLY create pending requests with strict field allowlists:
+      //      * DEPOSIT -> status must be 'PENDING_CONFIRMATION'
+      //      * TASK_REWARD -> status must be 'PENDING_REVIEW'
+      //    - WITHDRAWAL creation from client is BLOCKED (must go through server-side
+      //      atomic escrow endpoint POST /api/wallet/withdraw)
+      //    - Owner CANNOT create COMPLETED, MINING_PAYOUT, or REFERRAL_BONUS records
+      //    - Owner CANNOT update or delete transactions once submitted
+      // =======================================================================
       match /transactions/{transactionId} {
-        allow read: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
 
         allow create: if isOwner(userId)
-          && isValidId(transactionId)
-          && request.resource.data.userId == userId
-          && (!('id' in request.resource.data) || request.resource.data.id == transactionId)
-          && request.resource.data.asset in ['USDT', 'BTC', 'ETH', 'SOL', 'LTC']
-          && request.resource.data.amount is number
-          && request.resource.data.amount > 0
-          && request.resource.data.type in ['DEPOSIT', 'WITHDRAWAL', 'TASK_REWARD']
-          && (
-            (request.resource.data.type == 'DEPOSIT' && request.resource.data.status == 'PENDING_CONFIRMATION')
-            ||
-            (request.resource.data.type == 'WITHDRAWAL' && request.resource.data.status == 'PENDING_REVIEW')
-            ||
-            (
-              request.resource.data.type == 'TASK_REWARD'
-              && request.resource.data.status == 'PENDING_REVIEW'
-              && request.resource.data.asset == 'USDT'
-              && (
-                (
-                  'rewardDay' in request.resource.data
-                  && (
-                    (request.resource.data.rewardDay is string && request.resource.data.rewardDay.matches('^\\d{4}-\\d{2}-\\d{2}$'))
-                    || (isNonNegativeInteger(request.resource.data.rewardDay) && request.resource.data.rewardDay >= 1 && request.resource.data.rewardDay <= 7)
-                  )
-                )
-                || (
-                  'taskId' in request.resource.data
-                  && request.resource.data.taskId is string
-                  && request.resource.data.taskId.size() > 0
-                  && request.resource.data.taskId.size() <= 64
-                )
-              )
-            )
-          )
-          && request.resource.data.keys().hasOnly([
-            'id',
-            'userId',
-            'type',
-            'asset',
-            'amount',
-            'amountUSD',
-            'fee',
-            'netPayoutAmount',
-            'status',
-            'timestamp',
-            'network',
-            'txHash',
-            'toAddress',
-            'fromAddress',
-            'note',
-            'claimDate',
-            'rewardDay',
-            'streakDay',
-            'taskId',
-            'rewardSource',
-            'createdAt'
-          ])
-          && !request.resource.data.keys().hasAny([
-            'approvedBy',
-            'approvedByUid',
-            'approvedAt',
-            'verifiedBy',
-            'verifiedAt',
-            'walletCredited',
-            'walletSettled',
-            'reservedFromBalance',
-            'refunded',
-            'refundedAt',
-            'settlementId',
-            'settlementStatus',
-            'approvalStatus',
-            'creditedAt',
-            'payoutTxHash',
-            'rejectedBy',
-            'rejectedByUid',
-            'rejectedAt',
-            'metadataBackfilledFrom'
-          ]);
+                      && !hasForbiddenSettlementFields(request.resource.data)
+                      && request.resource.data.id == transactionId
+                      && request.resource.data.userId == userId
+                      && request.resource.data.asset is string
+                      && isSupportedAsset(request.resource.data.asset)
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.amount <= 1000000
+                      && request.resource.data.amountUSD is number
+                      && request.resource.data.amountUSD > 0
+                      && request.resource.data.amountUSD <= 10000000
+                      && request.resource.data.fee is number
+                      && request.resource.data.fee >= 0
+                      && request.resource.data.timestamp is string
+                      && request.resource.data.timestamp.size() <= 40
+                      && (!('note' in request.resource.data) || (request.resource.data.note is string && request.resource.data.note.size() <= 300))
+                      && (
+                        // Case A: Pending Deposit Request
+                        (
+                          request.resource.data.type == 'DEPOSIT'
+                          && request.resource.data.keys().hasOnly([
+                            'id',
+                            'userId',
+                            'type',
+                            'asset',
+                            'amount',
+                            'amountUSD',
+                            'fee',
+                            'status',
+                            'timestamp',
+                            'network',
+                            'txHash',
+                            'note',
+                            'createdAt'
+                          ])
+                          && request.resource.data.status == 'PENDING_CONFIRMATION'
+                          && request.resource.data.fee == 0
+                          && meetsMinDeposit(request.resource.data.asset, request.resource.data.amount)
+                          && request.resource.data.txHash is string
+                          && request.resource.data.txHash.size() >= 8
+                          && request.resource.data.txHash.size() <= 160
+                          && request.resource.data.network is string
+                          && request.resource.data.network.size() >= 2
+                          && request.resource.data.network.size() <= 64
+                        )
+                        ||
+                        // Case B: Pending Reward / Check-in Request (Requires explicit rewardDay/streakDay or taskId)
+                        (
+                          request.resource.data.type == 'TASK_REWARD'
+                          && request.resource.data.keys().hasOnly([
+                            'id',
+                            'userId',
+                            'type',
+                            'asset',
+                            'amount',
+                            'amountUSD',
+                            'fee',
+                            'status',
+                            'timestamp',
+                            'claimDate',
+                            'rewardDay',
+                            'streakDay',
+                            'taskId',
+                            'rewardSource',
+                            'note',
+                            'createdAt'
+                          ])
+                          && request.resource.data.status == 'PENDING_REVIEW'
+                          && request.resource.data.asset == 'USDT'
+                          && request.resource.data.fee == 0
+                          && request.resource.data.amount == request.resource.data.amountUSD
+                          && isOfficialRewardAmount(request.resource.data.amount)
+                          && (
+                            // Subcase B1: Daily Streak Reward
+                            (
+                              request.resource.data.rewardSource == 'DAILY_STREAK'
+                              && request.resource.data.streakDay is int
+                              && request.resource.data.streakDay >= 1
+                              && request.resource.data.streakDay <= 7
+                              && request.resource.data.rewardDay is string
+                              && request.resource.data.rewardDay.matches('^\\d{4}-\\d{2}-\\d{2}$')
+                              && isOfficialDailyRewardForDay(request.resource.data.streakDay, request.resource.data.amount)
+                            )
+                            ||
+                            // Subcase B2: Task Bounty Reward
+                            (
+                              request.resource.data.rewardSource == 'TASK_BOUNTY'
+                              && request.resource.data.taskId is string
+                              && request.resource.data.taskId.size() <= 64
+                              && isOfficialTaskRewardForId(request.resource.data.taskId, request.resource.data.amount)
+                            )
+                          )
+                        )
+                      );
 
+        // Transactions are immutable from the client after submission
         allow update, delete: if false;
       }
 
-      /**
-       * Settlements idempotency & audit subcollection: /users/{userId}/settlements/{settlementId}
-       *
-       * Financial Security Constraints:
-       * 1. Read: Authenticated owner can read only their own settlement audit records.
-       * 2. Write: Strictly FORBIDDEN from client SDK. Only the server-side Firebase Admin SDK
-       *    can create or update settlement records inside atomic transactions.
-       */
-      match /settlements/{settlementId} {
-        allow read: if isOwner(userId);
-        allow write: if false;
-      }
-
-      /**
-       * Mining session subcollection: /users/{userId}/mining/{docId}
-       *
-       * Security Constraints:
-       * 1. Read: Authenticated owner can read their own simulated mining session.
-       * 2. Write (create/update): Authenticated owner can save harmless simulated session preferences only.
-       *    - Must specify userId matching request.auth.uid.
-       *    - Status must be a valid status ('IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE').
-       *    - Hashrate must be a valid non-negative number.
-       *    - Simulated flag must remain true if specified.
-       *    - Explicit allowlist of allowed harmless simulation preference fields on BOTH create and update.
-       *    - Absolute protection of trusted output and financial fields:
-       *      Clients CANNOT set or alter 'verifiedEarningsUSD', 'verifiedPayoutUSD', 'confirmedRewardCoin',
-       *      'walletCredited', 'acceptedShares', 'rejectedShares', 'uptime', 'uptimeSeconds',
-       *      'todayEstimatedRewardCoin', 'todayEstimatedRewardUSD', 'approvalStatus', 'verifiedAt', 'verifiedBy'.
-       *    - Direct client payouts or wallet credits are strictly blocked.
-       * 3. Delete: Forbidden to maintain session configuration history.
-       */
+      // =======================================================================
+      // 5. Mining Session Subcollection: users/{userId}/mining/{docId}
+      //    - Owner can read and manage their own session state (start/pause/profile)
+      //    - Owner CANNOT arbitrarily inflate confirmedRewardCoin, todayEstimatedRewardCoin,
+      //      todayEstimatedRewardUSD, or spoof purchased planId/activeContractId
+      // =======================================================================
       match /mining/{docId} {
-        allow read: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
 
         allow create: if isOwner(userId)
-          && isValidId(docId)
-          && request.resource.data.userId == userId
-          && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
-          && request.resource.data.hashrateTHs is number
-          && request.resource.data.hashrateTHs >= 0
-          && (!('isSimulated' in request.resource.data) || request.resource.data.isSimulated == true)
-          && (!('hardwareProfile' in request.resource.data) || request.resource.data.hardwareProfile in ['Eco', 'Balanced', 'Turbo Overclock'])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'id',
-            'algorithm',
-            'targetCoin',
-            'hardwareProfile',
-            'status',
-            'startedAt',
-            'lastSessionId',
-            'planId',
-            'isSimulated',
-            'hashrateTHs',
-            'efficiencyWTH',
-            'temperatureC',
-            'poolName',
-            'createdAt',
-            'updatedAt'
-          ])
-          && !request.resource.data.keys().hasAny([
-            'verifiedEarningsUSD',
-            'verifiedPayoutUSD',
-            'confirmedRewardCoin',
-            'walletCredited',
-            'acceptedShares',
-            'rejectedShares',
-            'uptime',
-            'uptimeSeconds',
-            'todayEstimatedRewardCoin',
-            'todayEstimatedRewardUSD',
-            'approvalStatus',
-            'verifiedAt',
-            'verifiedBy'
-          ]);
+                      && docId == 'session'
+                      && !hasForbiddenSettlementFields(request.resource.data)
+                      && request.resource.data.keys().hasOnly([
+                        'id',
+                        'userId',
+                        'status',
+                        'algorithm',
+                        'targetCoin',
+                        'hashrateGHs',
+                        'hashrateTHs',
+                        'powerConsumptionW',
+                        'efficiencyJTH',
+                        'uptimeSeconds',
+                        'startedAt',
+                        'todayEstimatedRewardCoin',
+                        'todayEstimatedRewardUSD',
+                        'confirmedRewardCoin',
+                        'workerName',
+                        'poolLocation',
+                        'hardwareProfile',
+                        'acceptedShares',
+                        'rejectedShares',
+                        'createdAt',
+                        'updatedAt'
+                      ])
+                      && request.resource.data.userId == userId
+                      && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED']
+                      && (!('hashrateGHs' in request.resource.data) || (request.resource.data.hashrateGHs is number && request.resource.data.hashrateGHs >= 0))
+                      && request.resource.data.hashrateTHs is number
+                      && request.resource.data.hashrateTHs >= 0
+                      && request.resource.data.confirmedRewardCoin == 0
+                      && request.resource.data.todayEstimatedRewardCoin == 0
+                      && request.resource.data.todayEstimatedRewardUSD == 0
+                      && request.resource.data.acceptedShares == 0
+                      && request.resource.data.rejectedShares == 0
+                      // Client cannot self-assign a paid planId on initial session creation
+                      && !('planId' in request.resource.data);
 
         allow update: if isOwner(userId)
-          && isValidId(docId)
-          && (!('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId)
-          && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED', 'MAINTENANCE']
-          && request.resource.data.hashrateTHs is number
-          && request.resource.data.hashrateTHs >= 0
-          && (!('isSimulated' in request.resource.data) || request.resource.data.isSimulated == true)
-          && (!('hardwareProfile' in request.resource.data) || request.resource.data.hardwareProfile in ['Eco', 'Balanced', 'Turbo Overclock'])
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'userId',
-            'status',
-            'hashrateTHs',
-            'startedAt',
-            'lastSessionId',
-            'temperatureC',
-            'efficiencyWTH',
-            'hardwareProfile',
-            'isSimulated',
-            'algorithm',
-            'targetCoin',
-            'poolName',
-            'planId',
-            'updatedAt'
-          ])
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'id',
-            'createdAt',
-            'verifiedEarningsUSD',
-            'verifiedPayoutUSD',
-            'confirmedRewardCoin',
-            'walletCredited',
-            'acceptedShares',
-            'rejectedShares',
-            'uptime',
-            'uptimeSeconds',
-            'todayEstimatedRewardCoin',
-            'todayEstimatedRewardUSD',
-            'approvalStatus',
-            'verifiedAt',
-            'verifiedBy'
-          ]);
+                      && docId == 'session'
+                      && !hasForbiddenSettlementFields(request.resource.data)
+                      // Only allow safe operational session fields to be modified from client
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                        'status',
+                        'startedAt',
+                        'uptimeSeconds',
+                        'hashrateGHs',
+                        'hashrateTHs',
+                        'powerConsumptionW',
+                        'efficiencyJTH',
+                        'hardwareProfile',
+                        'workerName',
+                        'poolLocation',
+                        'updatedAt'
+                      ])
+                      && request.resource.data.userId == resource.data.userId
+                      && request.resource.data.status in ['IDLE', 'ACTIVE', 'PAUSED']
+                      && (!('hashrateGHs' in request.resource.data) || (request.resource.data.hashrateGHs is number && request.resource.data.hashrateGHs >= 0))
+                      && request.resource.data.hashrateTHs is number
+                      && request.resource.data.hashrateTHs >= 0
+                      // Reward counters and paid contract planId/activeContractId cannot be modified by client
+                      && request.resource.data.confirmedRewardCoin == resource.data.confirmedRewardCoin
+                      && request.resource.data.todayEstimatedRewardCoin == resource.data.todayEstimatedRewardCoin
+                      && request.resource.data.todayEstimatedRewardUSD == resource.data.todayEstimatedRewardUSD
+                      && request.resource.data.acceptedShares == resource.data.acceptedShares
+                      && request.resource.data.rejectedShares == resource.data.rejectedShares
+                      && (!('planId' in request.resource.data) || request.resource.data.planId == resource.data.planId)
+                      && (!('activeContractId' in request.resource.data) || request.resource.data.activeContractId == resource.data.activeContractId)
+                      && (!('activeContractName' in request.resource.data) || request.resource.data.activeContractName == resource.data.activeContractName);
 
         allow delete: if false;
       }
 
-      /**
-       * Rewards subcollection: /users/{userId}/rewards/{rewardDoc}
-       *
-       * Security Constraints:
-       * 1. Read: Authenticated owner can read their own daily streak & reward history.
-       * 2. Write (create/update): Authenticated owner can submit daily check-in claim requests.
-       *    - Must specify userId matching request.auth.uid.
-       *    - currentStreak must be a non-negative integer between 0 and 7 (no decimals).
-       *    - totalClaims must be a non-negative integer (no decimals).
-       *    - claimStatus must strictly be 'PENDING_VERIFICATION' or 'SIMULATED'.
-       *      Clients CANNOT mark claims as 'APPROVED', 'VERIFIED', or 'COMPLETED'.
-       *    - Strict field allowlist on BOTH create and update.
-       *    - Absolute protection of trusted approval and financial fields on BOTH create and update:
-       *      Clients cannot supply or alter 'approvalStatus', 'verifiedAt', 'verifiedBy',
-       *      'verifiedEarningsUSD', 'walletCredited', 'approvedAmount', or 'creditedAt'.
-       *    - createdAt is immutable on update and cannot be modified.
-       *    - Client-generated dates and streaks are treated strictly as pending requests.
-       * 3. Delete: Forbidden from client SDK.
-       */
-      match /rewards/{rewardDoc} {
-        allow read: if isOwner(userId);
-
-        allow create: if isOwner(userId)
-          && isValidId(rewardDoc)
-          && request.resource.data.userId == userId
-          && isNonNegativeInteger(request.resource.data.currentStreak)
-          && request.resource.data.currentStreak <= 7
-          && isNonNegativeInteger(request.resource.data.totalClaims)
-          && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'currentStreak',
-            'lastClaimDate',
-            'lastClaimTimestamp',
-            'lastClaimTxId',
-            'totalClaims',
-            'claimStatus',
-            'claimHistory',
-            'createdAt',
-            'updatedAt'
-          ])
-          && !request.resource.data.keys().hasAny([
-            'approvalStatus',
-            'verifiedAt',
-            'verifiedBy',
-            'verifiedEarningsUSD',
-            'walletCredited',
-            'approvedAmount',
-            'creditedAt'
-          ]);
-
-        allow update: if isOwner(userId)
-          && isValidId(rewardDoc)
-          && (!('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId)
-          && isNonNegativeInteger(request.resource.data.currentStreak)
-          && request.resource.data.currentStreak <= 7
-          && isNonNegativeInteger(request.resource.data.totalClaims)
-          && (!('claimStatus' in request.resource.data) || request.resource.data.claimStatus in ['PENDING_VERIFICATION', 'SIMULATED'])
-          && (!('createdAt' in resource.data) || !('createdAt' in request.resource.data) || request.resource.data.createdAt == resource.data.createdAt)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'userId',
-            'currentStreak',
-            'lastClaimDate',
-            'lastClaimTimestamp',
-            'lastClaimTxId',
-            'totalClaims',
-            'claimStatus',
-            'claimHistory',
-            'updatedAt'
-          ])
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'createdAt',
-            'approvalStatus',
-            'verifiedAt',
-            'verifiedBy',
-            'verifiedEarningsUSD',
-            'walletCredited',
-            'approvedAmount',
-            'creditedAt'
-          ]);
-
-        allow delete: if false;
-      }
-
-      /**
-       * Cloud Mining Contracts subcollection: /users/{userId}/contracts/{contractId}
-       *
-       * Security Constraints:
-       * 1. Read: Authenticated owner can read their own purchased cloud mining contracts.
-       * 2. Write: Strictly forbidden from the client SDK (`allow write: if false`).
-       *    All contract purchases and entitlements must be created atomically by the
-       *    trusted backend (`POST /api/mining/purchase-contract` or `purchaseMiningContract`
-       *    Cloud Function) after verifying server-confirmed USDT balance.
-       */
+      // =======================================================================
+      // 6. Active Mining Contracts Subcollection: users/{userId}/contracts/{contractId}
+      //    - READ-ONLY for the authenticated owner (and verified admin)
+      //    - Written exclusively by server-side Admin SDK (/api/mining/purchase-contract)
+      // =======================================================================
       match /contracts/{contractId} {
-        allow read: if isOwner(userId);
-        allow write: if false;
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
+      }
+
+      // =======================================================================
+      // 7. Daily Rewards & Streak Subcollection: users/{userId}/rewards/{docId}
+      //    - Owner can read their streak state
+      //    - Owner can ONLY record a pending daily check-in ('PENDING_VERIFICATION')
+      //      for a new calendar day (lastClaimDate != existing lastClaimDate)
+      //    - Owner CANNOT set claimStatus to 'CLAIMED' or self-approve rewards
+      // =======================================================================
+      match /rewards/{docId} {
+        allow read: if isOwner(userId) || isAdmin();
+
+        allow create: if isOwner(userId)
+                      && docId == 'dailyStreak'
+                      && !hasForbiddenSettlementFields(request.resource.data)
+                      && request.resource.data.keys().hasOnly([
+                        'userId',
+                        'currentStreak',
+                        'lastClaimDate',
+                        'lastClaimTimestamp',
+                        'totalClaimedCount',
+                        'totalPendingRewardUSD',
+                        'claimStatus',
+                        'claimHistory',
+                        'createdAt',
+                        'updatedAt'
+                      ])
+                      && request.resource.data.userId == userId
+                      && request.resource.data.currentStreak == 1
+                      && request.resource.data.totalClaimedCount == 1
+                      && request.resource.data.claimStatus == 'PENDING_VERIFICATION'
+                      && request.resource.data.lastClaimDate is string
+                      && request.resource.data.lastClaimDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+                      && request.resource.data.totalPendingRewardUSD == 0.5
+                      && request.resource.data.claimHistory is list
+                      && request.resource.data.claimHistory.size() == 1;
+
+        allow update: if isOwner(userId)
+                      && docId == 'dailyStreak'
+                      && !hasForbiddenSettlementFields(request.resource.data)
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                        'currentStreak',
+                        'lastClaimDate',
+                        'lastClaimTimestamp',
+                        'totalClaimedCount',
+                        'totalPendingRewardUSD',
+                        'claimStatus',
+                        'claimHistory',
+                        'updatedAt'
+                      ])
+                      && request.resource.data.userId == resource.data.userId
+                      && request.resource.data.claimStatus == 'PENDING_VERIFICATION'
+                      && request.resource.data.lastClaimDate is string
+                      && request.resource.data.lastClaimDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+                      // Prevent duplicate check-ins on the same UTC date
+                      && request.resource.data.lastClaimDate != resource.data.lastClaimDate
+                      && request.resource.data.currentStreak is int
+                      && request.resource.data.currentStreak >= 1
+                      && request.resource.data.currentStreak <= 7
+                      && (
+                        request.resource.data.currentStreak == 1
+                        || request.resource.data.currentStreak == resource.data.currentStreak + 1
+                      )
+                      && request.resource.data.totalClaimedCount == resource.data.totalClaimedCount + 1
+                      // Ensure pending reward delta matches official schedule for currentStreak day
+                      && isOfficialDailyRewardForDay(
+                        request.resource.data.currentStreak,
+                        request.resource.data.totalPendingRewardUSD - resource.data.totalPendingRewardUSD
+                      )
+                      && request.resource.data.claimHistory is list
+                      && request.resource.data.claimHistory.size() <= 30;
+
+        allow delete: if false;
       }
     }
 
-    // Default deny for all other collections and documents
+    // Default deny all other paths
     match /{document=**} {
       allow read, write: if false;
     }

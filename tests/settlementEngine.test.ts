@@ -1143,12 +1143,98 @@ async function runTests() {
     console.log(
       '✓ Test 10 Passed: /api/admin/pending-requests and /api/admin/pending-deposits transparently recover from Firestore 9 FAILED_PRECONDITION missing collectionGroup index'
     );
+
+    // ---------------------------------------------------------------------------
+    // Test 11: Real-User vs. Demo-User Wallet Isolation & Deposit Address Stripping
+    // ---------------------------------------------------------------------------
+    const { getCleanRealUserWalletAssets, INITIAL_WALLET_ASSETS } = await import('../src/services/walletService.ts');
+    const cleanRealAssets = getCleanRealUserWalletAssets();
+    assert.equal(cleanRealAssets.length, INITIAL_WALLET_ASSETS.length, 'Real user asset list must match supported symbols');
+    for (const asset of cleanRealAssets) {
+      assert.equal(asset.balance, 0, `Real user initial balance for ${asset.symbol} must be 0`);
+      assert.equal(asset.lockedBalance, 0, `Real user initial lockedBalance for ${asset.symbol} must be 0`);
+      assert.equal(
+        asset.depositAddress,
+        '',
+        `Real user depositAddress for ${asset.symbol} must be empty when no live custodial gateway is connected`
+      );
+    }
+    // Verify demo assets still retain sample addresses strictly for Sandbox Demo Mode
+    for (const demoAsset of INITIAL_WALLET_ASSETS) {
+      assert.ok(
+        demoAsset.depositAddress.length > 10,
+        `Sandbox demo asset ${demoAsset.symbol} retains sample address for demo mode`
+      );
+    }
+    console.log(
+      '✓ Test 11 Passed: Real-user wallet assets strip sample deposit addresses and demo balances while preserving Sandbox Demo Mode'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 12: Firestore Security Rules Policy & Schema Alignment Verification
+    // ---------------------------------------------------------------------------
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const rulesSource = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+
+    // 12a. Admin RBAC & /admins/{adminId} collection
+    assert.match(rulesSource, /function isAdmin\(\)/, 'firestore.rules must define isAdmin() helper');
+    assert.match(
+      rulesSource,
+      /exists\(\/databases\/\$\(database\)\/documents\/admins\/\$\(request\.auth\.uid\)\)/,
+      'isAdmin() must support /admins/{uid} document lookup'
+    );
+    assert.match(rulesSource, /match \/admins\/\{adminId\}/, 'firestore.rules must define /admins/{adminId} rules');
+
+    // 12b. Mining session schema alignment (hashrateGHs, activeContractId, activeContractName)
+    assert.match(
+      rulesSource,
+      /'hashrateGHs'/,
+      'firestore.rules /mining/{docId} must allow hashrateGHs on create and update'
+    );
+    assert.match(
+      rulesSource,
+      /request\.resource\.data\.activeContractId == resource\.data\.activeContractId/,
+      'firestore.rules /mining/{docId} must protect activeContractId from client tampering while allowing session updates'
+    );
+    assert.match(
+      rulesSource,
+      /request\.resource\.data\.activeContractName == resource\.data\.activeContractName/,
+      'firestore.rules /mining/{docId} must protect activeContractName from client tampering while allowing session updates'
+    );
+
+    // 12c. Client-side WITHDRAWAL creation blocked (server-only atomic escrow required)
+    assert.ok(
+      !rulesSource.includes("request.resource.data.type == 'WITHDRAWAL'"),
+      'firestore.rules must NOT permit direct client-side WITHDRAWAL creation bypassing server-side atomic escrow'
+    );
+
+    // 12d. Wallet, contracts, and settlements remain strictly non-writable by clients
+    assert.match(
+      rulesSource,
+      /match \/wallet\/\{assetSymbol\}[\s\S]*?allow create, update, delete: if false;/,
+      'Wallet subcollection must deny all client writes'
+    );
+    assert.match(
+      rulesSource,
+      /match \/contracts\/\{contractId\}[\s\S]*?allow create, update, delete: if false;/,
+      'Contracts subcollection must deny all client writes'
+    );
+    assert.match(
+      rulesSource,
+      /match \/settlements\/\{settlementId\}[\s\S]*?allow create, update, delete: if false;/,
+      'Settlements subcollection must deny all client writes'
+    );
+
+    console.log(
+      '✓ Test 12 Passed: firestore.rules verified for isAdmin() RBAC, hashrateGHs mining schema alignment, server-only withdrawal escrow, and financial write blocks'
+    );
   } finally {
     resetServerTestHooks();
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
   }
 
-  console.log('\nALL 10 SETTLEMENT & SECURITY VERIFICATION SUITES PASSED.');
+  console.log('\nALL 12 SETTLEMENT, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
 }
 
 runTests().catch((err) => {

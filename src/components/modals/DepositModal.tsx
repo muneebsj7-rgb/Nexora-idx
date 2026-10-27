@@ -11,7 +11,7 @@ interface DepositModalProps {
 }
 
 export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, defaultAsset = 'USDT' }) => {
-  const { walletAssets, submitDepositRequest, addToast } = useApp();
+  const { user, walletAssets, submitDepositRequest, addToast } = useApp();
 
   const [selectedSymbol, setSelectedSymbol] = useState(defaultAsset);
   const currentAsset = walletAssets.find((a) => a.symbol === selectedSymbol) || walletAssets[0];
@@ -21,6 +21,9 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
   const [txHash, setTxHash] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  const hasLiveDepositAddress = Boolean(currentAsset.depositAddress && currentAsset.depositAddress.trim().length > 0);
+  const isDemoSession = Boolean(user?.isDemo);
+
   useEffect(() => {
     if (isOpen && defaultAsset) {
       setSelectedSymbol(defaultAsset);
@@ -29,14 +32,15 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
         setSelectedNetwork(target.networks[0]);
       }
     }
-  }, [isOpen, defaultAsset]);
+  }, [isOpen, defaultAsset, walletAssets]);
 
   if (!isOpen) return null;
 
   const handleCopy = () => {
+    if (!hasLiveDepositAddress) return;
     navigator.clipboard.writeText(currentAsset.depositAddress);
     setCopied(true);
-    addToast('Address Copied', 'Deposit address copied to clipboard.', 'success');
+    addToast('Address Copied', 'Sandbox deposit address copied to clipboard.', 'success');
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -84,7 +88,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
           {/* Asset Selection */}
           <div>
             <label className="block text-xs font-medium text-[#98A6BA] mb-1.5">Select Deposit Asset</label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-5 gap-2">
               {walletAssets.map((asset) => (
                 <button
                   key={asset.symbol}
@@ -93,7 +97,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
                     setSelectedSymbol(asset.symbol);
                     setSelectedNetwork(asset.networks[0]);
                   }}
-                  className={`py-2 px-2.5 rounded-xl border text-xs font-semibold flex flex-col items-center gap-1.5 transition-all ${
+                  className={`py-2 px-2 rounded-xl border text-xs font-semibold flex flex-col items-center gap-1.5 transition-all ${
                     selectedSymbol === asset.symbol
                       ? 'border-[#00D6A3] bg-[#00D6A3]/10 text-[#00D6A3] shadow-sm'
                       : 'border-[#253144] bg-[#0D121C] text-[#98A6BA] hover:border-[#36465D] hover:text-[#F4F7FC]'
@@ -122,36 +126,52 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, def
             </select>
           </div>
 
-          {/* QR & Address */}
-          <div className="p-4 rounded-xl bg-[#0D121C] border border-[#253144] flex flex-col items-center">
-            {/* QR Code Container */}
-            <div className="w-36 h-36 bg-white p-2 rounded-xl flex items-center justify-center shadow-lg relative group">
-              <div className="w-full h-full border-4 border-slate-900 flex flex-col items-center justify-center p-2 text-slate-950 text-center">
-                <QrCode className="w-16 h-16 text-slate-900" />
-                <span className="text-[9px] font-mono font-bold mt-1 tracking-wider uppercase">
-                  {selectedSymbol} - {selectedNetwork.split(' ')[0]}
-                </span>
+          {/* QR & Address vs. Custodial Gateway Unavailable Notice */}
+          {hasLiveDepositAddress && isDemoSession ? (
+            <div className="p-4 rounded-xl bg-[#0D121C] border border-[#253144] flex flex-col items-center">
+              <div className="mb-2 px-2.5 py-0.5 rounded-md bg-[#F3B64B]/15 border border-[#F3B64B]/30 text-[10px] font-mono font-bold text-[#F3B64B] uppercase tracking-wider">
+                Sandbox Demo Address — Do Not Send Real Funds
               </div>
-            </div>
+              <div className="w-36 h-36 bg-white p-2 rounded-xl flex items-center justify-center shadow-lg relative group">
+                <div className="w-full h-full border-4 border-slate-900 flex flex-col items-center justify-center p-2 text-slate-950 text-center">
+                  <QrCode className="w-16 h-16 text-slate-900" />
+                  <span className="text-[9px] font-mono font-bold mt-1 tracking-wider uppercase">
+                    {selectedSymbol} - {selectedNetwork.split(' ')[0]}
+                  </span>
+                </div>
+              </div>
 
-            <div className="mt-3 w-full">
-              <span className="text-[11px] text-[#98A6BA] font-medium block text-center mb-1">
-                Your Dedicated {selectedSymbol} Address:
-              </span>
-              <div className="flex items-center gap-1.5 bg-[#121925] p-2 rounded-xl border border-[#253144]">
-                <p className="font-mono text-xs text-[#00D6A3] break-all select-all flex-1 px-1">
-                  {currentAsset.depositAddress}
-                </p>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className="p-1.5 rounded-lg bg-[#00D6A3]/10 hover:bg-[#00D6A3]/20 text-[#00D6A3] border border-[#00D6A3]/30 transition-colors shrink-0"
-                >
-                  {copied ? <Check className="w-4 h-4 text-[#00D6A3]" /> : <Copy className="w-4 h-4" />}
-                </button>
+              <div className="mt-3 w-full">
+                <span className="text-[11px] text-[#98A6BA] font-medium block text-center mb-1">
+                  Simulated {selectedSymbol} Sandbox Address:
+                </span>
+                <div className="flex items-center gap-1.5 bg-[#121925] p-2 rounded-xl border border-[#253144]">
+                  <p className="font-mono text-xs text-[#00D6A3] break-all select-all flex-1 px-1">
+                    {currentAsset.depositAddress}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleCopy}
+                    className="p-1.5 rounded-lg bg-[#00D6A3]/10 hover:bg-[#00D6A3]/20 text-[#00D6A3] border border-[#00D6A3]/30 transition-colors shrink-0"
+                  >
+                    {copied ? <Check className="w-4 h-4 text-[#00D6A3]" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="p-4 rounded-xl bg-[#0D121C] border border-[#F3B64B]/40 flex flex-col items-center text-center space-y-2">
+              <div className="w-11 h-11 rounded-xl bg-[#F3B64B]/10 border border-[#F3B64B]/30 flex items-center justify-center text-[#F3B64B]">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <h4 className="text-xs font-bold text-[#F4F7FC] uppercase tracking-wider">
+                Automated Deposit Gateway Not Configured
+              </h4>
+              <p className="text-[11px] text-[#98A6BA] leading-relaxed">
+                Dedicated per-user <strong className="text-[#F4F7FC]">{selectedSymbol}</strong> ({selectedNetwork}) deposit addresses require an active custodial payment gateway integration. Do not send funds to sample addresses. If you have completed an authorized treasury transfer, submit your blockchain TxID below for administrator verification.
+              </p>
+            </div>
+          )}
 
           {/* Deposit Verification Notice */}
           <div className="p-3 rounded-xl bg-[#F3B64B]/10 border border-[#F3B64B]/30 text-[#F3B64B] text-xs flex gap-2.5 items-start">

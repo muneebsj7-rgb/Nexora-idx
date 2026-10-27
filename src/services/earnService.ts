@@ -436,24 +436,6 @@ export class DailyRewardsFirestoreService {
         message: `Day ${nextStreak} check-in recorded (UTC: ${todayUTC}). Status: PENDING_VERIFICATION. Client balance crediting is blocked; requires trusted backend verification.`,
       };
     } catch (writeError: any) {
-      const isPermissionDenied =
-        writeError?.code === 'permission-denied' ||
-        (typeof writeError?.message === 'string' && writeError.message.includes('permission'));
-
-      if (isPermissionDenied) {
-        console.warn(
-          `Firestore notice for users/${uid}: Remote database rejected claim due to missing permissions. ` +
-          `The updated firestore.rules for users/{userId}/rewards and transactions need to be published in your Firebase Console. ` +
-          `Applied streak check-in to active session.`
-        );
-
-        return {
-          streakRecord: updatedStreakRecord,
-          txId,
-          message: `Day ${nextStreak} check-in recorded in active session. (Note: Publish local firestore.rules in Firebase Console to sync across devices.)`,
-        };
-      }
-
       console.warn(`Error claiming daily reward for users/${uid}:`, writeError);
       throw formatRewardError(writeError, 'submitting daily reward claim');
     }

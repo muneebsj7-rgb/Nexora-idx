@@ -1,83 +1,107 @@
-# Implementation Plan: Nexora Cloud Mining — App Cleanup & Unnecessary Feature Removal
+# Nexora Cloud Mining — Complete A–Z Audit, Security Hardening & Bug Fixes
 
-## 1. Overview
-This plan updates the user-facing branding from **Nexora Mine** to **Nexora Cloud Mining** and removes unnecessary technical labels, provider branding, and fake hardware controls across the interface while preserving the existing dark aesthetic, Firebase authentication, wallet security, live market feeds, admin desk, and the five authoritative BTC mining contracts.
+Deliver a full-stack security, financial integrity, authentication, and UI audit of **Nexora Cloud Mining**, resolving verified defects across login navigation, Firestore Security Rules, real-vs-demo wallet isolation, and atomic backend settlement while preserving the existing dark aesthetic, five BTC contract plans, and live market feeds.
 
----
+## User Review & Critical Decisions
 
-## 2. Application Rebranding (`Nexora Mine` → `Nexora Cloud Mining`)
-Update all user-visible occurrences of the app name without altering Firebase project IDs, Firestore collection paths, environment variables, or internal authentication identifiers:
-- **`/index.html`**:
-  - Update `<title>` to `Nexora Cloud Mining — Bitcoin Cloud Mining`.
-  - Update `<meta property="og:title">` and `<meta name="description">` to reference `Nexora Cloud Mining`.
-- **`/src/components/Navigation.tsx`**:
-  - Update top desktop sidebar brand header from `NEXORA MINE` (`Cloud Pool Stratum`) to `NEXORA CLOUD MINING` (`Bitcoin Cloud Mining`).
-- **`/src/components/screens/HomeScreen.tsx`**:
-  - Update mobile top header brand title from `NEXORA MINE` (`PRO POOL`) to `NEXORA CLOUD MINING`.
-- **`/src/components/modals/AuthModal.tsx`**:
-  - Update sign-in modal heading from `Sign In to Nexora Mine` to `Sign In to Nexora Cloud Mining`.
-- **`/src/components/screens/ProfileScreen.tsx`**:
-  - Update appearance description copy from `Nexora Mine control terminal` to `Nexora Cloud Mining terminal`.
+> [!IMPORTANT]
+> The following architectural and security decisions were confirmed during interactive clarification and govern all code changes:
+
+- **Confirmed Decision 1 — Real-User Deposit Address Isolation**: Show an honest "Payment Provider Not Configured" state inside the Deposit Modal for real authenticated Firebase accounts so sample strings are never presented as live custodial addresses, while preserving interactive sample addresses exclusively in Sandbox Demo Mode.
+- **Confirmed Decision 2 — Fail-Closed Real-User Withdrawals**: Require server-side atomic balance reservation (`lockedBalance` escrow via the backend settlement engine) for all real-user withdrawal requests. Remove the client-side unreserved fallback when server Admin SDK credentials are missing so concurrent requests can never double-spend available balances.
+- **Confirmed Decision 3 — Server-Only Administrative Settlement & Rules Hardening**: Enforce all balance-affecting and administrative approvals strictly through server-side Firebase Admin SDK transactions verified by Firebase ID tokens, verified email status, custom claims, and an `/admins/{uid}` authorization lookup.
 
 ---
 
-## 3. Removal of Specific Labels, Provider Branding & Unnecessary Features
+## 1. Overview & Core Concept
 
-### A. `Pool Frankfurt 01` & `SHA-256 Bitcoin Cloud Contracts • Pool Node: Nexora Global Stratum - FRA01`
-- **`/src/components/screens/HomeScreen.tsx`**:
-  - Remove the `Pool: Frankfurt 01` header status pill.
-  - Remove the `Stratum Pool: {miningSession.poolName}` subtitle line from the mining status card.
-- **`/src/components/screens/MiningScreen.tsx`**:
-  - Remove the subtitle `SHA-256 Bitcoin Cloud Contracts • Pool Node: {miningSession.poolName}` and replace with clean, accurate contract copy (`Bitcoin Cloud Mining Contracts`).
-- **`/src/components/modals/NotificationDrawer.tsx`**:
-  - Replace `SHA-256 Nexora Stratum Pool` and `Cluster FRA01 operating at 99.8% efficiency...` with clean cloud mining status descriptions (`Bitcoin Cloud Mining` / `Cloud mining session operating normally.`).
-- **`/src/services/miningService.ts` & `/src/services/settlementEngine.ts`**:
-  - Update default `poolName` fallback from `'Nexora Global Stratum - FRA01'` to `'Bitcoin Cloud Hashrate'` so no `FRA01` or `Nexora Global Stratum` identifier is surfaced.
-
-### B. `Binance WebSocket` & `Binance` Branding
-Keep live market prices, 24h ticker cards, and candlestick charts functioning seamlessly while removing all user-visible `Binance` provider references:
-- **`/src/components/screens/HomeScreen.tsx`**:
-  - Change `Binance Spot Market Snapshot` to `Live Market Snapshot`.
-  - Replace `Binance market feed error` and `Connecting to Binance Spot market stream...` with `Market data temporarily unavailable` and `Connecting to live market stream...`.
-- **`/src/components/screens/MarketsScreen.tsx`**:
-  - Change badge `Binance Spot Terminal` to `Live Market Terminal`.
-  - Change subtitle `Official Binance Spot real-time 24h tickers, OHLCV candlesticks & proof-of-work mineability` to `Real-time 24h market tickers, OHLCV candlesticks & digital assets`.
-  - Change `Binance Market Feed Unavailable` and `Connecting to Binance Spot market feed...` to `Market Data Temporarily Unavailable` and `Loading live market data...`.
-  - Remove `• Binance Spot Feed` from the coin detail modal header.
-- **`/src/components/ui/CandlestickChart.tsx`**:
-  - Update loading and error messages (`Loading ... candlesticks from Binance...`, `Binance Candlestick Stream Unavailable`, `Unable to load candlestick data from Binance.`) to provider-neutral messages (`Loading ... candlestick chart...`, `Market Chart Temporarily Unavailable`, `Market chart data temporarily unavailable.`).
-- **`/src/components/screens/ProfileScreen.tsx`**:
-  - Change `Active (Binance Public Tickers)` to `Active (Real-Time Market Stream)`.
-- **`/src/context/AppContext.tsx` & `/src/services/marketService.ts`**:
-  - Sanitize user-facing error strings to neutral messages (`Market data temporarily unavailable.`) while preserving the underlying REST/WebSocket market data pipeline.
-
-### C. `Cloud Rig Active` & `Simulated Mining`
-- **`/src/components/screens/HomeScreen.tsx`**:
-  - Replace `Cloud Rig Active` with `Mining Active` (or `Mining Standby` when paused) to accurately reflect contract session state without claiming physical rig telemetry.
-  - Replace the fake `Shares / Health` (`°C`) card in the Home mining bar with an accurate `Allocated Hashrate` / `Contract Status` summary.
-- **`/src/components/screens/MiningScreen.tsx`**:
-  - Remove the `Simulated Mining` badge in the Mining screen header.
-  - Remove the `Simulated Mining` pill inside the circular hashrate gauge.
-  - Replace the fake hardware telemetry card (`Rig Core / Power` with fabricated `°C` and `W/TH` numbers) with an accurate **Active Contracts** summary card (`{activeContracts.length} Active` and allocated contract hashrate).
-  - Update the bottom disclosure heading from `Simulated Mining Notice:` to `Contract Terms Notice:` while keeping clear, honest language that displayed returns are contract terms and estimated projections rather than guaranteed payouts.
-
-### D. `Tuning Mode`
-- **`/src/components/screens/MiningScreen.tsx`**:
-  - Remove the `Tuning Mode:` control bar (`Eco`, `Balanced`, `Turbo Overclock` buttons), unused `Sliders` / `Thermometer` icon imports, and `setHardwareProfile` UI controls from the Mining screen so users only interact with real contract plans and session controls.
-
-### E. `Multi-Sig`, `Firestore Synced`, and `Tier Multiplier`
-- **`/src/components/screens/WalletScreen.tsx`**:
-  - Remove the `Multi-Sig Vault` badge and the `Firestore Synced` badge from the Wallet header.
-  - Remove the `FIRESTORE` tag on pending transaction rows and change `Firestore Synced Record` in the transaction receipt modal to `Verified Ledger Record`.
-- **`/src/components/screens/ProfileScreen.tsx`**:
-  - Remove `and multi-sig security` from the email verification notice.
-- **`/src/components/screens/EarnScreen.tsx`**:
-  - Remove the `Tier Multipliers` and `Firestore Synced (UTC)` badges from the Rewards header.
+- **What It Does**: Audits every layer of Nexora Cloud Mining (UI, state context, authentication, Firestore schema/rules, Express backend, Cloud Functions, and settlement engine), fixes verified bugs and security gaps, and produces an evidence-backed completion and readiness report.
+- **Target Audience / Persona**: Cryptocurrency cloud mining users managing BTC hashrate contracts (`Genesis Shaft`, `Blockfoundry`, `Stratum Yard`, `Halving Bench`, `Epoch Vault`), portfolio balances, and daily streak rewards, alongside platform administrators reviewing pending financial requests.
+- **Key Value**: Eliminates authentication race conditions and post-login screen jumps, prevents real users from sending funds to hardcoded demo addresses, blocks unescrowed client withdrawals, synchronizes Firestore Security Rules with the actual data model, and verifies all guarantees with automated tests.
 
 ---
 
-## 4. Verification & Git Workflow
-1. Work on dedicated feature branch `feat/nexora-cloud-mining-cleanup`.
-2. Verify all five BTC mining plans (`Genesis Shaft` $10, `Blockfoundry` $48, `Stratum Yard` $135, `Halving Bench` $510, `Epoch Vault` $1,480) remain intact across frontend and backend.
-3. Run a full codebase search to confirm zero remaining user-facing occurrences of `Nexora Mine`, `Pool Frankfurt 01`, `FRA01`, `Binance`, `Cloud Rig Active`, `Simulated Mining`, `Tuning Mode`, `Multi-Sig`, `Firestore Synced`, or `Tier Multiplier`.
-4. Run TypeScript typechecking (`lint_applet`), production build (`compile_applet`), and the automated settlement test suite (`npx tsx tests/settlementEngine.test.ts`).
+## 2. User Experience & Visual Design
+
+- **Key User Flows**:
+  1. **Consistent Post-Login Home Navigation**: Whether signing in from the header button, the logged-out Profile screen prompt, or a protected action modal, successful login, registration, and demo entry deterministically route to the **Home** dashboard without race conditions or ghost clicks opening Profile Settings.
+  2. **Honest Deposit Address Experience**:
+     - *Sandbox Demo Mode*: Displays the simulated QR code and sample address (`[DEMO]`) for testing the interface.
+     - *Real Authenticated Users*: Displays a clear **Custodial Deposit Gateway Not Configured** notice in place of the hardcoded sample address and disables copying fake addresses until a live payment provider or verified treasury address is provisioned.
+  3. **Atomic Withdrawal & Contract Purchase Flow**: Real users submit withdrawals and BTC contract orders through authenticated backend endpoints that atomically verify server-confirmed balances, reserve escrow or deduct USDT, and update the ledger immediately.
+- **Visual Identity & Theme**:
+  - *Aesthetic Direction*: Utilitarian dark fintech & cloud mining terminal (`#080B12` primary canvas, `#121925` structural cards, `#253144` 1px borders).
+  - *Color Palette & Mood*: 60% deep obsidian slate canvas (`#080B12` / `#0D121C`), 30% structural dark navy surfaces (`#121925`), and 10% high-intent emerald (`#00D6A3`), cyan (`#25B9F3`), and gold (`#F3B64B`) accents for active states and semantic alerts.
+  - *Typography & Hierarchy*: Crisp geometric sans headings paired with tabular monospace numerals (`font-mono tabular-nums`) across all balances, hashrates (`GH/s`, `TH/s`, `MH/s`), prices, and timestamps.
+  - *Component Styling & Layout*: Responsive mobile-first touch targets ($\ge 44\text{px}$) with full desktop multi-column expansion (`max-w-7xl`), single-elevation card depth, and clean status indicators.
+- **Interactive Feedback & Motion**: Deterministic loading spinners on auth and settlement actions, immediate state cleanup on account switch/logout, and clear toast notifications distinguishing server-confirmed settlements from offline cache states.
+
+---
+
+## 3. Key Product Decisions & Trade-Offs
+
+- **Decision 1: Eliminating the Login Navigation & Profile Race Condition**
+  - *Chosen Approach*: Deduplicate concurrent profile initialization calls in the authentication service per UID, track explicit authentication transitions in application state so transitioning from logged-out (`null`) to an authenticated session while on the logged-out Profile screen (or via `AuthModal`) always lands on `'home'`, and guard header profile buttons against click-through events during modal dismissal.
+  - *Why*: Previously, `login()` and `onAuthStateChanged` both invoked profile initialization concurrently; if a user initiated login from the logged-out Profile view or if `onAuthStateChanged` resolved asynchronously out of order, the active tab could remain on or switch to `'profile'`.
+  - *Alternatives Considered*: Forcing `'home'` on every `onAuthStateChanged` callback was rejected because token refreshes or page reloads on other tabs should not disrupt an already-authenticated user's manual navigation.
+- **Decision 2: Strict Real-User vs. Demo-User Deposit & Withdrawal Isolation**
+  - *Chosen Approach*: Strip sample deposit addresses from real-user wallet state (`depositAddress: ''` when `!user.isDemo`) and render an explicit "Custodial Deposit Gateway Not Configured" panel in the Deposit Modal for real users. For withdrawals, require the `/api/wallet/withdraw` atomic escrow endpoint to succeed and fail closed if server Admin SDK credentials are unavailable.
+  - *Why*: Showing sample strings as "Your Dedicated Address" to real users is a critical financial safety hazard, and allowing client-side unreserved withdrawal documents permits concurrent requests to exceed available balance.
+  - *Alternatives Considered*: Hiding the Deposit Modal entirely was passed over in favor of showing an explicit configuration status inside the modal so users understand why live deposits are unavailable.
+- **Decision 3: Aligning Firestore Security Rules with Schema & Admin Governance**
+  - *Chosen Approach*:
+    - Add `/admins/{adminId}` rule definition and `isAdmin()` helper while keeping all wallet, settlement, and contract writes strictly `allow write: if false` on the client (Admin SDK only).
+    - Update `/users/{userId}/mining/{docId}` allowed keys on `create` and `update` to include `hashrateGHs` (as a non-negative number) and preserve immutable server-written contract pointers (`activeContractId`, `activeContractName`) so toggling mining or initializing a session never triggers `permission-denied`.
+    - Enforce string length bounds, strict key allowlists, immutable ownership/timestamp checks (`userId`, `createdAt`), and block client-side `WITHDRAWAL` creation now that withdrawals are strictly created by the server-side atomic escrow transaction.
+  - *Why*: Ensures zero update-gaps, prevents unescrowed client withdrawal writes at the database rule layer, and fixes the schema mismatch where `hashrateGHs` caused client mining session updates to fail against published rules.
+
+---
+
+## 4. Technical Architecture & Data Strategy *(Technical Reference)*
+
+- **Architecture & Component Diagram**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        NEXORA CLOUD MINING CLIENT                           │
+│                                                                             │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  │
+│  │  HomeScreen  │   │ MiningScreen │   │ WalletScreen │   │  EarnScreen  │  │
+│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘   └──────┬───────┘  │
+│         └──────────────────┴─────────┬────────┴──────────────────┘          │
+│                                      ▼                                      │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │            AppContext (Deterministic Auth & Tab State)                │  │
+│  │  • Routes login/register/logged-out-profile transitions -> Home      │  │
+│  │  • Isolates Real User (0.00 balance, no fake address) vs Demo Mode   │  │
+│  └───────────────┬───────────────────────────────────────┬───────────────┘  │
+└──────────────────┼───────────────────────────────────────┼──────────────────┘
+                   │ Client Firestore SDK                  │ Bearer ID Token
+                   │ (Read + Safe Pending Requests)        │ (HTTPS REST / RPC)
+                   ▼                                       ▼
+┌─────────────────────────────────────┐ ┌─────────────────────────────────────┐
+│      CLOUD FIRESTORE & RULES        │ │   EXPRESS / CLOUD FUNCTIONS API     │
+│                                     │ │                                     │
+│ • /users/{uid} (Owner R/W safe)     │ │ • POST /api/mining/purchase-contract│
+│ • /users/{uid}/wallet/* (Read-Only) │ │ • POST /api/wallet/withdraw (Escrow)│
+│ • /users/{uid}/contracts/* (R-Only) │ │ • POST /api/admin/approve-*         │
+│ • /users/{uid}/settlements/* (R-O)  │ │ • POST /api/admin/reject-*          │
+│ • /users/{uid}/transactions/*       │ │ • GET  /api/admin/pending-requests  │
+│   (Create pending Deposit/Reward)   │ └──────────────────┬──────────────────┘
+│ • /users/{uid}/mining/session       │                    │ Firebase Admin SDK
+│   (Includes hashrateGHs validation) │                    │ (Atomic Txns)
+│ • /users/{uid}/rewards/dailyStreak  │                    ▼
+│ • /admins/{uid} (Admin Registry)    │ ◄──────────────────┘
+└─────────────────────────────────────┘
+```
+
+- **Data Model & State**:
+  - **User Profile (`users/{uid}`)**: Stores non-privileged profile attributes (`displayName`, `avatarUrl`, `currency`, `accentTheme`, `twoFactorEnabled`, `referralCode`, `referredBy`). Privileged fields (`isAdmin`, `kycTier`, `id`, `createdAt`) are immutable from the client; `isEmailVerified` is bound to `request.auth.token.email_verified`.
+  - **Wallet (`users/{uid}/wallet/{assetSymbol}`)**: Strict `allow write: if false` for clients. Mutated exclusively inside atomic `runTransaction` blocks by the backend settlement engine.
+  - **Transactions (`users/{uid}/transactions/{txId}`)**: Clients may only create `DEPOSIT` (`PENDING_CONFIRMATION`) or `TASK_REWARD` (`PENDING_REVIEW`) requests with validated positive amounts and zero approval/settlement flags. `WITHDRAWAL` and `CONTRACT_PURCHASE` documents are created atomically by the backend alongside balance/escrow updates.
+  - **Mining Session (`users/{uid}/mining/session`)**: Stores session status (`IDLE`, `ACTIVE`, `PAUSED`, `MAINTENANCE`) and harmless simulation preferences (`hashrateGHs`, `hashrateTHs`, `hardwareProfile`, `temperatureC`, `efficiencyWTH`), while blocking client writes to financial or payout fields.
+- **Interactive Component & State Mapping**:
+  - **Auth & Tab Synchronization**: Deduplicated `ensureUserProfileDocument` prevents parallel write races during signup/login; `AppContext` guarantees that signing in from any modal or from the unauthenticated Profile screen sets `activeTab = 'home'`.
+  - **Deposit Modal**: Checks `user?.isDemo`; for real users, hides fake QR/address strings, renders a clear provider-not-configured notice, and prevents submitting deposit references unless explicitly testing or configured.
+  - **Withdrawal Modal & Service**: Calls `POST /api/wallet/withdraw` with the user's Firebase ID token; if the server returns `503 MISSING_ADMIN_CREDENTIALS` or network failure, rejects the withdrawal cleanly instead of writing an unescrowed transaction.
+  - **Automated Verification Suite**: Extends the automated test suite to verify settlement engine invariants, Firestore Security Rules structure and field guards (`hashrateGHs`, withdrawal client write block, admin privilege protection, shadow-field rejection), login navigation state transitions, and demo-data isolation.

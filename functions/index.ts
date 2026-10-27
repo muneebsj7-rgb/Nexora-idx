@@ -34,6 +34,7 @@ const db = getFirestore();
 const ADMIN_EMAILS = Array.from(
   new Set([
     'muneebsj7@gmail.com',
+    'procurement.initialsaudi@gmail.com',
     ...(process.env.ADMIN_EMAILS
       ? process.env.ADMIN_EMAILS
           .split(',')
@@ -47,10 +48,10 @@ const AUTHORITATIVE_ASSET_CONFIG: Record<
   string,
   { minDeposit: number; minWithdraw: number; withdrawFee: number }
 > = {
-  USDT: { minDeposit: 10, minWithdraw: 20, withdrawFee: 1.0 },
+  USDT: { minDeposit: 10, minWithdraw: 20, withdrawFee: 1.5 },
   BTC: { minDeposit: 0.0005, minWithdraw: 0.001, withdrawFee: 0.0002 },
-  ETH: { minDeposit: 0.01, minWithdraw: 0.02, withdrawFee: 0.002 },
-  SOL: { minDeposit: 0.1, minWithdraw: 0.2, withdrawFee: 0.01 },
+  ETH: { minDeposit: 0.01, minWithdraw: 0.02, withdrawFee: 0.003 },
+  SOL: { minDeposit: 0.1, minWithdraw: 0.25, withdrawFee: 0.01 },
   LTC: { minDeposit: 0.1, minWithdraw: 0.2, withdrawFee: 0.005 },
 };
 
