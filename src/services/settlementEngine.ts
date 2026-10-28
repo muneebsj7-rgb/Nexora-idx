@@ -87,8 +87,70 @@ export const ALLOWED_REWARD_AMOUNTS = new Set<number>([
 export const roundCrypto = (val: number): number => Number(Number(val || 0).toFixed(8));
 
 const ALLOWED_DEPOSIT_PENDING_STATUSES = ['PENDING_CONFIRMATION', 'PENDING_REVIEW'];
+const ALLOWED_DEPOSIT_RECONCILE_STATUSES = [
+  'PENDING_CONFIRMATION',
+  'PENDING_REVIEW',
+  'CONFIRMED',
+  'APPROVED',
+  'COMPLETED',
+];
 const ALLOWED_REWARD_PENDING_STATUSES = ['PENDING_REVIEW', 'PENDING_CONFIRMATION'];
 const ALLOWED_WITHDRAWAL_PENDING_STATUSES = ['PENDING_REVIEW', 'PENDING_CONFIRMATION', 'PROCESSING'];
+
+const FORBIDDEN_PAYMENT_REFERENCE_VALUES = new Set([
+  'internal',
+  'demo',
+  'test',
+  'pending',
+  'none',
+  'null',
+  'undefined',
+  'n/a',
+  'na',
+  'fake',
+  'mock',
+  'unverified',
+  'simulated',
+  'placeholder',
+]);
+
+export function normalizeAndValidateDepositReference(
+  rawTxHashInput: unknown,
+  txId: string
+): { rawTxHash: string; normalizedHash: string; paymentRefDocId: string } {
+  const rawTxHash = typeof rawTxHashInput === 'string' ? rawTxHashInput.trim() : '';
+  if (rawTxHash.length < 8 || rawTxHash.length > 140) {
+    throw new Error(
+      `Deposit transaction ${txId} is missing a valid blockchain transaction hash (txHash must be at least 8 characters).`
+    );
+  }
+
+  const lower = rawTxHash.toLowerCase();
+  const strippedPrefix = lower.replace(/^0x/i, '');
+  if (
+    FORBIDDEN_PAYMENT_REFERENCE_VALUES.has(lower) ||
+    FORBIDDEN_PAYMENT_REFERENCE_VALUES.has(strippedPrefix) ||
+    !/^[a-zA-Z0-9:_-]{8,140}$/.test(rawTxHash) ||
+    /^([a-z0-9])\1{7,}$/i.test(strippedPrefix)
+  ) {
+    throw new Error(
+      `Deposit transaction ${txId} is missing a valid blockchain transaction hash (unverified or placeholder reference '${rawTxHash}' rejected).`
+    );
+  }
+
+  const normalizedHash = lower.replace(/[^a-z0-9_-]/g, '');
+  if (normalizedHash.length < 8) {
+    throw new Error(
+      `Deposit transaction ${txId} is missing a valid blockchain transaction hash (normalized reference too short).`
+    );
+  }
+
+  return {
+    rawTxHash,
+    normalizedHash,
+    paymentRefDocId: `txhash_${normalizedHash}`,
+  };
+}
 
 export interface SettlementResult {
   alreadyProcessed: boolean;
@@ -104,6 +166,7 @@ export interface SettlementResult {
   newLockedBalance: number;
   netPayoutAmount?: number;
   fee?: number;
+  paymentReferenceId?: string;
   message: string;
 }
 
@@ -134,8 +197,8 @@ const assertNotContradictoryForApproval = (txData: Record<string, any>, txId: st
 
 /**
  * 1. APPROVE DEPOSIT
- * Atomically verifies deposit request, credits `users/{userId}/wallet/{asset}.balance`,
- * marks transaction `COMPLETED` + `walletCredited: true` + `walletSettled: true`,
+ * Atomically verifies deposit request, locks global `paymentReferences/txhash_<normalized>`,
+ * credits `users/{userId}/wallet/{asset}.balance`, marks transaction `COMPLETED` + `walletCredited: true` + `walletSettled: true`,
  * and writes immutable `users/{userId}/settlements/{txId}`.
  */
 export async function settleDepositApproval(
@@ -152,6 +215,9 @@ export async function settleDepositApproval(
   const { userId, txId, admin, note, allowManualCompletedStatus = false } = params;
   if (!userId || !txId) {
     throw new Error('Missing required userId or txId for deposit approval.');
+  }
+  if (!admin || (!admin.uid && !admin.email)) {
+    throw new Error('Authorized administrator actor is required for deposit settlement.');
   }
 
   return db.runTransaction(async (transaction) => {
@@ -180,9 +246,13 @@ export async function settleDepositApproval(
       throw new Error(`Unsupported or missing deposit asset symbol '${assetSymbol}' on transaction ${txId}.`);
     }
 
-    const amount = roundCrypto(Number(txData.amount));
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const rawAmountNum = Number(txData.amount);
+    const amount = roundCrypto(rawAmountNum);
+    if (!Number.isFinite(rawAmountNum) || !Number.isFinite(amount) || amount <= 0) {
       throw new Error(`Invalid deposit amount (${txData.amount}) on transaction ${txId}.`);
+    }
+    if (Math.abs(rawAmountNum - amount) > 1e-8) {
+      throw new Error(`Deposit amount (${txData.amount}) exceeds maximum 8-decimal precision on transaction ${txId}.`);
     }
     if (amount < assetSpec.minDeposit) {
       throw new Error(
@@ -196,7 +266,15 @@ export async function settleDepositApproval(
     const currentBalance = roundCrypto(Number(walletData.balance || 0));
     const currentLocked = roundCrypto(Number(walletData.lockedBalance || 0));
 
-    // Idempotency guard: if already credited/settled in ledger, return safe no-op
+    // Reject any deposit carrying REJECTED / FAILED markers before idempotency return
+    assertNotContradictoryForApproval(txData, txId);
+    if (settlementSnap.exists && settlementSnap.data()?.status === 'REJECTED') {
+      throw new Error(
+        `Transaction ${txId} was already settled as REJECTED and cannot be approved.`
+      );
+    }
+
+    // Idempotency guard: if already credited/settled as COMPLETED in ledger, return safe no-op
     if (
       txData.walletCredited === true ||
       txData.walletSettled === true ||
@@ -214,36 +292,48 @@ export async function settleDepositApproval(
         newBalance: currentBalance,
         previousLockedBalance: currentLocked,
         newLockedBalance: currentLocked,
+        paymentReferenceId: txData.paymentReferenceId,
         message: 'Deposit has already been approved and credited.',
       };
     }
 
-    assertNotContradictoryForApproval(txData, txId);
+    const { rawTxHash, normalizedHash, paymentRefDocId } = normalizeAndValidateDepositReference(
+      txData.txHash,
+      txId
+    );
 
-    const rawTxHash = typeof txData.txHash === 'string' ? txData.txHash.trim() : '';
-    if (rawTxHash.length < 8) {
-      throw new Error(
-        `Deposit transaction ${txId} is missing a valid blockchain transaction hash (txHash must be at least 8 characters).`
-      );
-    }
-
-    // Strict pending state check:
+    // Strict pending/reconciliation state check:
     // Standard approval requires PENDING_CONFIRMATION or PENDING_REVIEW.
-    // A manually edited COMPLETED status with walletCredited=false is rejected on standard approval
-    // and only processed when explicitly invoked via validated Console reconciliation.
+    // Unsettled CONFIRMED, APPROVED, or COMPLETED statuses are only processed when explicitly invoked
+    // via authorized admin reconciliation (`allowManualCompletedStatus: true`).
     const allowedStatuses = allowManualCompletedStatus
-      ? [...ALLOWED_DEPOSIT_PENDING_STATUSES, 'COMPLETED']
+      ? ALLOWED_DEPOSIT_RECONCILE_STATUSES
       : ALLOWED_DEPOSIT_PENDING_STATUSES;
 
     if (!allowedStatuses.includes(txData.status)) {
-      if (!allowManualCompletedStatus && txData.status === 'COMPLETED') {
+      if (
+        !allowManualCompletedStatus &&
+        ['COMPLETED', 'CONFIRMED', 'APPROVED'].includes(String(txData.status))
+      ) {
         throw new Error(
-          `Deposit transaction ${txId} has status 'COMPLETED' without prior settlement verification. Standard approval requires a pending state (${ALLOWED_DEPOSIT_PENDING_STATUSES.join(' or ')}).`
+          `Deposit transaction ${txId} has status '${txData.status}' without prior settlement verification. Standard approval requires a pending state (${ALLOWED_DEPOSIT_PENDING_STATUSES.join(' or ')}).`
         );
       }
       throw new Error(
         `Deposit transaction ${txId} cannot be approved from status '${txData.status}'. Required: ${ALLOWED_DEPOSIT_PENDING_STATUSES.join(' or ')}.`
       );
+    }
+
+    // Global payment-reference uniqueness check (READ before any WRITE)
+    const paymentRefDoc = db.doc(`paymentReferences/${paymentRefDocId}`);
+    const paymentRefSnap = await transaction.get(paymentRefDoc);
+    if (paymentRefSnap.exists) {
+      const existingRef = paymentRefSnap.data() || {};
+      if (existingRef.txId !== txId || existingRef.userId !== userId) {
+        throw new Error(
+          `Duplicate payment reference: transaction hash '${rawTxHash}' has already been credited to deposit transaction '${existingRef.txId}' (user '${existingRef.userId}').`
+        );
+      }
     }
 
     const newBalance = roundCrypto(currentBalance + amount);
@@ -252,7 +342,26 @@ export async function settleDepositApproval(
       Number(txData.amountUSD) > 0 && amount > 0
         ? Number((Number(txData.amountUSD) / amount).toFixed(4))
         : Number(walletData.priceUSD || assetSpec.defaultUsdRate);
+    const resolvedChange24h =
+      walletData.change24h !== undefined ? Number(walletData.change24h) : 0;
 
+    // 1. Reserve unique global payment reference
+    transaction.set(paymentRefDoc, {
+      id: paymentRefDocId,
+      txHash: rawTxHash,
+      normalizedHash,
+      userId,
+      txId,
+      type: 'DEPOSIT',
+      asset: assetSymbol,
+      amount,
+      status: 'CREDITED',
+      approvedBy: admin.email || admin.uid,
+      approvedByUid: admin.uid,
+      settledAt: nowIso,
+    });
+
+    // 2. Credit wallet balance once with full authoritative asset metadata
     if (!walletSnap.exists) {
       transaction.set(walletRef, {
         symbol: assetSymbol,
@@ -260,16 +369,22 @@ export async function settleDepositApproval(
         balance: newBalance,
         lockedBalance: 0,
         priceUSD: resolvedPriceUSD,
-        change24h: 0,
+        change24h: resolvedChange24h,
         updatedAt: nowIso,
       });
     } else {
       transaction.update(walletRef, {
+        symbol: walletData.symbol || assetSymbol,
+        name: walletData.name || assetSpec.name,
         balance: newBalance,
+        lockedBalance: currentLocked,
+        priceUSD: walletData.priceUSD !== undefined ? Number(walletData.priceUSD) : resolvedPriceUSD,
+        change24h: resolvedChange24h,
         updatedAt: nowIso,
       });
     }
 
+    // 3. Update deposit transaction settlement fields
     transaction.update(txRef, {
       userId,
       status: 'COMPLETED',
@@ -280,6 +395,7 @@ export async function settleDepositApproval(
       creditedAsset: assetSymbol,
       previousBalance: currentBalance,
       newBalance,
+      paymentReferenceId: paymentRefDocId,
       approvedAt: nowIso,
       approvedBy: admin.email || admin.uid,
       approvedByUid: admin.uid,
@@ -287,6 +403,7 @@ export async function settleDepositApproval(
       updatedAt: nowIso,
     });
 
+    // 4. Create immutable settlement ledger receipt
     transaction.set(settlementRef, {
       txId,
       userId,
@@ -296,6 +413,7 @@ export async function settleDepositApproval(
       asset: assetSymbol,
       amount,
       txHash: rawTxHash,
+      paymentReferenceId: paymentRefDocId,
       previousBalance: currentBalance,
       newBalance,
       previousLockedBalance: currentLocked,
@@ -318,6 +436,7 @@ export async function settleDepositApproval(
       newBalance,
       previousLockedBalance: currentLocked,
       newLockedBalance: currentLocked,
+      paymentReferenceId: paymentRefDocId,
       message: `Approved and credited +${amount} ${assetSymbol} to user Available Balance.`,
     };
   });

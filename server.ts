@@ -332,6 +332,8 @@ function mapTransactionDoc(docSnap: FirebaseFirestore.QueryDocumentSnapshot | Fi
     reservedFromBalance: Boolean(data.reservedFromBalance),
     refunded: Boolean(data.refunded),
     settlementStatus: data.settlementStatus,
+    paymentReferenceId: data.paymentReferenceId,
+    settlementWarning: data.settlementWarning,
     claimDate: data.claimDate,
     rewardDay: data.rewardDay,
     streakDay: data.streakDay,
@@ -610,26 +612,114 @@ app.post('/api/mining/purchase-contract', requireUserAuth, async (req, res) => {
 });
 
 /**
- * GET /api/admin/pending-deposits
- * Lists pending deposits for administrative review
+ * Helper to deduplicate and filter unsettled deposit documents, optionally auto-reconciling
+ * valid CONFIRMED or APPROVED deposits when an authorized admin loads the queue.
  */
-app.get('/api/admin/pending-deposits', requireAdminAuth, async (_req, res) => {
+async function collectAndReconcileUnsettledDeposits(
+  db: any,
+  rawDocs: FirebaseFirestore.QueryDocumentSnapshot[],
+  adminActor: { uid: string; email: string },
+  autoReconcileConfirmed: boolean
+): Promise<{
+  deposits: Array<ReturnType<typeof mapTransactionDoc>>;
+  autoReconciled: Array<{ txId: string; userId: string; amount: number; asset: string; message: string }>;
+}> {
+  const seenKeys = new Set<string>();
+  const deposits: Array<ReturnType<typeof mapTransactionDoc>> = [];
+  const autoReconciled: Array<{ txId: string; userId: string; amount: number; asset: string; message: string }> = [];
+
+  for (const docSnap of rawDocs) {
+    if (!docSnap) continue;
+    const mapped = mapTransactionDoc(docSnap);
+    const uniqueKey = `${mapped.userId || 'unknown'}:${mapped.id}`;
+    if (seenKeys.has(uniqueKey)) continue;
+    seenKeys.add(uniqueKey);
+
+    // Never include already-settled deposits in the pending/unsettled queue
+    if (mapped.walletCredited || mapped.walletSettled) {
+      continue;
+    }
+
+    if (
+      autoReconcileConfirmed &&
+      mapped.userId &&
+      (mapped.status === 'CONFIRMED' || mapped.status === 'APPROVED')
+    ) {
+      try {
+        const res = await settleDepositApproval(db as any, {
+          userId: mapped.userId,
+          txId: mapped.id,
+          admin: adminActor,
+          note: `Auto-reconciled verified ${mapped.status} deposit via Admin Settlement Console`,
+          allowManualCompletedStatus: true,
+          serverTimestamp: () => FieldValue.serverTimestamp(),
+        });
+        if (!res.alreadyProcessed) {
+          autoReconciled.push({
+            txId: mapped.id,
+            userId: mapped.userId,
+            amount: res.amount,
+            asset: res.asset,
+            message: res.message,
+          });
+        }
+        continue;
+      } catch (reconcileErr: any) {
+        const warningMsg =
+          reconcileErr?.message || 'Awaiting payment verification before wallet credit.';
+        mapped.settlementWarning = warningMsg;
+        try {
+          await db.doc(`users/${mapped.userId}/transactions/${mapped.id}`).update({
+            settlementStatus: 'AWAITING_VERIFICATION',
+            settlementWarning: warningMsg,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+          // Ignore if read-only test mock does not implement direct doc.update
+        }
+      }
+    }
+
+    deposits.push(mapped);
+  }
+
+  return { deposits, autoReconciled };
+}
+
+/**
+ * GET /api/admin/pending-deposits
+ * Lists pending and unsettled CONFIRMED/APPROVED deposits for administrative review
+ */
+app.get('/api/admin/pending-deposits', requireAdminAuth, async (req, res) => {
   try {
     if (!hasActiveFirestoreBackend()) {
       res.json({
         deposits: [],
+        autoReconciled: [],
         notice: 'Firebase Admin not connected to Firestore database.',
       });
       return;
     }
 
+    const caller = (req as any).adminCaller as AuthenticatedCaller;
+    const autoReconcile = req.query.autoReconcile !== 'false';
     const db = getActiveFirestore();
-    const [depositDocs] = await queryTransactionsAcrossUsers(db, [
-      { type: 'DEPOSIT', status: 'PENDING_CONFIRMATION', limit: 50 },
-    ]);
+    const [pendingConfirmDocs, pendingReviewDocs, confirmedDocs, approvedDocs] =
+      await queryTransactionsAcrossUsers(db, [
+        { type: 'DEPOSIT', status: 'PENDING_CONFIRMATION', limit: 50 },
+        { type: 'DEPOSIT', status: 'PENDING_REVIEW', limit: 50 },
+        { type: 'DEPOSIT', status: 'CONFIRMED', limit: 50 },
+        { type: 'DEPOSIT', status: 'APPROVED', limit: 50 },
+      ]);
 
-    const deposits = depositDocs.map(mapTransactionDoc);
-    res.json({ deposits });
+    const { deposits, autoReconciled } = await collectAndReconcileUnsettledDeposits(
+      db,
+      [...pendingConfirmDocs, ...pendingReviewDocs, ...confirmedDocs, ...approvedDocs],
+      { uid: caller.uid, email: caller.email || caller.uid },
+      autoReconcile
+    );
+
+    res.json({ deposits, autoReconciled });
   } catch (err: any) {
     console.error('Error listing pending deposits:', err);
     res.status(500).json({
@@ -641,33 +731,54 @@ app.get('/api/admin/pending-deposits', requireAdminAuth, async (_req, res) => {
 /**
  * GET /api/admin/pending-requests
  * Lists all pending financial requests across users:
- * - Deposits (`type == 'DEPOSIT'`, `status == 'PENDING_CONFIRMATION'`)
+ * - Unsettled Deposits (`PENDING_CONFIRMATION`, `PENDING_REVIEW`, `CONFIRMED`, `APPROVED`)
  * - Daily Bonus / Task Reward Claims (`type == 'TASK_REWARD'`, `status == 'PENDING_REVIEW'`)
  * - Withdrawals (`type == 'WITHDRAWAL'`, `status == 'PENDING_REVIEW'`)
  */
-app.get('/api/admin/pending-requests', requireAdminAuth, async (_req, res) => {
+app.get('/api/admin/pending-requests', requireAdminAuth, async (req, res) => {
   try {
     if (!hasActiveFirestoreBackend()) {
       res.json({
         deposits: [],
         rewards: [],
         withdrawals: [],
+        autoReconciled: [],
         notice: 'Firebase Admin not connected to Firestore database.',
       });
       return;
     }
 
+    const caller = (req as any).adminCaller as AuthenticatedCaller;
+    const autoReconcile = req.query.autoReconcile !== 'false';
     const db = getActiveFirestore();
-    const [depositDocs, rewardDocs, withdrawalDocs] = await queryTransactionsAcrossUsers(db, [
+    const [
+      pendingConfirmDocs,
+      pendingReviewDocs,
+      confirmedDocs,
+      approvedDocs,
+      rewardDocs,
+      withdrawalDocs,
+    ] = await queryTransactionsAcrossUsers(db, [
       { type: 'DEPOSIT', status: 'PENDING_CONFIRMATION', limit: 50 },
+      { type: 'DEPOSIT', status: 'PENDING_REVIEW', limit: 50 },
+      { type: 'DEPOSIT', status: 'CONFIRMED', limit: 50 },
+      { type: 'DEPOSIT', status: 'APPROVED', limit: 50 },
       { type: 'TASK_REWARD', status: 'PENDING_REVIEW', limit: 50 },
       { type: 'WITHDRAWAL', status: 'PENDING_REVIEW', limit: 50 },
     ]);
 
+    const { deposits, autoReconciled } = await collectAndReconcileUnsettledDeposits(
+      db,
+      [...pendingConfirmDocs, ...pendingReviewDocs, ...confirmedDocs, ...approvedDocs],
+      { uid: caller.uid, email: caller.email || caller.uid },
+      autoReconcile
+    );
+
     res.json({
-      deposits: depositDocs.map(mapTransactionDoc),
-      rewards: rewardDocs.map(mapTransactionDoc),
-      withdrawals: withdrawalDocs.map(mapTransactionDoc),
+      deposits,
+      rewards: rewardDocs.map(mapTransactionDoc).filter((r) => !r.walletCredited && !r.walletSettled),
+      withdrawals: withdrawalDocs.map(mapTransactionDoc).filter((w) => !w.walletSettled),
+      autoReconciled,
     });
   } catch (err: any) {
     console.error('Error listing pending requests:', err);
@@ -682,7 +793,7 @@ app.get('/api/admin/pending-requests', requireAdminAuth, async (_req, res) => {
  * Atomically approves a deposit, credits user's wallet balance, and updates transaction status.
  */
 app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
-  const { userId, txId, note } = req.body;
+  const { userId, txId, note, allowManualCompletedStatus } = req.body;
   const caller = (req as any).adminCaller as AuthenticatedCaller;
 
   if (!userId || !txId) {
@@ -711,6 +822,7 @@ app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
       txId,
       admin: { uid: caller.uid, email: caller.email },
       note,
+      allowManualCompletedStatus: allowManualCompletedStatus !== undefined ? Boolean(allowManualCompletedStatus) : true,
       serverTimestamp: () => FieldValue.serverTimestamp(),
     });
 
@@ -1002,14 +1114,24 @@ app.post('/api/admin/reconcile-settlements', requireAdminAuth, async (req, res) 
       const userTxSnap = await db.collection(`users/${targetUserId}/transactions`).limit(100).get();
       docsToInspect = userTxSnap.docs;
     } else {
-      const [completedDeposits, completedRewards, completedWithdrawals, rejectedWithdrawals] =
-        await queryTransactionsAcrossUsers(db, [
-          { type: 'DEPOSIT', status: 'COMPLETED', limit: 50 },
-          { type: 'TASK_REWARD', status: 'COMPLETED', limit: 50 },
-          { type: 'WITHDRAWAL', status: 'COMPLETED', limit: 50 },
-          { type: 'WITHDRAWAL', status: 'REJECTED', limit: 50 },
-        ]);
+      const [
+        confirmedDeposits,
+        approvedDeposits,
+        completedDeposits,
+        completedRewards,
+        completedWithdrawals,
+        rejectedWithdrawals,
+      ] = await queryTransactionsAcrossUsers(db, [
+        { type: 'DEPOSIT', status: 'CONFIRMED', limit: 50 },
+        { type: 'DEPOSIT', status: 'APPROVED', limit: 50 },
+        { type: 'DEPOSIT', status: 'COMPLETED', limit: 50 },
+        { type: 'TASK_REWARD', status: 'COMPLETED', limit: 50 },
+        { type: 'WITHDRAWAL', status: 'COMPLETED', limit: 50 },
+        { type: 'WITHDRAWAL', status: 'REJECTED', limit: 50 },
+      ]);
       docsToInspect = [
+        ...confirmedDeposits,
+        ...approvedDeposits,
         ...completedDeposits,
         ...completedRewards,
         ...completedWithdrawals,
@@ -1019,17 +1141,22 @@ app.post('/api/admin/reconcile-settlements', requireAdminAuth, async (req, res) 
 
     for (const docSnap of docsToInspect) {
       const data = docSnap.data();
-      const parentUid = docSnap.ref.parent.parent?.id;
+      const parentUid = docSnap.ref?.parent?.parent?.id || (docSnap as any)._fallbackUserId;
       const uid = parentUid || data.userId;
       if (!uid) continue;
 
       try {
-        if (data.type === 'DEPOSIT' && data.status === 'COMPLETED' && !data.walletCredited) {
+        if (
+          data.type === 'DEPOSIT' &&
+          ['CONFIRMED', 'APPROVED', 'COMPLETED'].includes(String(data.status)) &&
+          !data.walletCredited &&
+          !data.walletSettled
+        ) {
           const resDeposit = await settleDepositApproval(db as any, {
             userId: uid,
             txId: docSnap.id,
             admin: adminActor,
-            note: 'Reconciled manual Firebase Console deposit confirmation',
+            note: `Reconciled manual Firebase Console deposit (${data.status})`,
             serverTimestamp: () => FieldValue.serverTimestamp(),
             allowManualCompletedStatus: true,
           });
@@ -1107,12 +1234,23 @@ app.post('/api/admin/reconcile-settlements', requireAdminAuth, async (req, res) 
           }
         }
       } catch (itemErr: any) {
+        const failureReason =
+          itemErr?.message || 'Failed structural verification for Console reconciliation.';
         skippedItems.push({
           txId: docSnap.id,
           userId: uid,
           type: String(data.type || 'UNKNOWN'),
-          reason: itemErr?.message || 'Failed structural verification for Console reconciliation.',
+          reason: failureReason,
         });
+        try {
+          await db.doc(`users/${uid}/transactions/${docSnap.id}`).update({
+            settlementStatus: 'AWAITING_VERIFICATION',
+            settlementWarning: failureReason,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+          // Ignore if read-only test mock does not implement direct doc.update
+        }
       }
     }
 

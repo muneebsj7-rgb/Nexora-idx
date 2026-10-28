@@ -46,14 +46,76 @@ const ADMIN_EMAILS = Array.from(
 
 const AUTHORITATIVE_ASSET_CONFIG: Record<
   string,
-  { minDeposit: number; minWithdraw: number; withdrawFee: number }
+  {
+    symbol: string;
+    name: string;
+    minDeposit: number;
+    minWithdraw: number;
+    withdrawFee: number;
+    defaultUsdRate: number;
+  }
 > = {
-  USDT: { minDeposit: 10, minWithdraw: 20, withdrawFee: 1.5 },
-  BTC: { minDeposit: 0.0005, minWithdraw: 0.001, withdrawFee: 0.0002 },
-  ETH: { minDeposit: 0.01, minWithdraw: 0.02, withdrawFee: 0.003 },
-  SOL: { minDeposit: 0.1, minWithdraw: 0.25, withdrawFee: 0.01 },
-  LTC: { minDeposit: 0.1, minWithdraw: 0.2, withdrawFee: 0.005 },
+  USDT: { symbol: 'USDT', name: 'Tether USD', minDeposit: 10, minWithdraw: 20, withdrawFee: 1.5, defaultUsdRate: 1.0 },
+  BTC: { symbol: 'BTC', name: 'Bitcoin', minDeposit: 0.0005, minWithdraw: 0.001, withdrawFee: 0.0002, defaultUsdRate: 94250 },
+  ETH: { symbol: 'ETH', name: 'Ethereum', minDeposit: 0.01, minWithdraw: 0.02, withdrawFee: 0.003, defaultUsdRate: 2785 },
+  SOL: { symbol: 'SOL', name: 'Solana', minDeposit: 0.1, minWithdraw: 0.25, withdrawFee: 0.01, defaultUsdRate: 186.4 },
+  LTC: { symbol: 'LTC', name: 'Litecoin', minDeposit: 0.1, minWithdraw: 0.2, withdrawFee: 0.005, defaultUsdRate: 128.5 },
 };
+
+const FORBIDDEN_PAYMENT_REFERENCE_VALUES = new Set([
+  'internal',
+  'demo',
+  'test',
+  'pending',
+  'none',
+  'null',
+  'undefined',
+  'n/a',
+  'na',
+  'fake',
+  'mock',
+  'unverified',
+  'simulated',
+  'placeholder',
+]);
+
+function normalizeAndValidateDepositReference(
+  rawTxHashInput: unknown,
+  txId: string
+): { rawTxHash: string; normalizedHash: string; paymentRefDocId: string } {
+  const rawTxHash = typeof rawTxHashInput === 'string' ? rawTxHashInput.trim() : '';
+  if (rawTxHash.length < 8 || rawTxHash.length > 140) {
+    throw new Error(
+      `Deposit transaction ${txId} is missing a valid blockchain transaction hash (txHash must be at least 8 characters).`
+    );
+  }
+
+  const lower = rawTxHash.toLowerCase();
+  const strippedPrefix = lower.replace(/^0x/i, '');
+  if (
+    FORBIDDEN_PAYMENT_REFERENCE_VALUES.has(lower) ||
+    FORBIDDEN_PAYMENT_REFERENCE_VALUES.has(strippedPrefix) ||
+    !/^[a-zA-Z0-9:_-]{8,140}$/.test(rawTxHash) ||
+    /^([a-z0-9])\1{7,}$/i.test(strippedPrefix)
+  ) {
+    throw new Error(
+      `Deposit transaction ${txId} is missing a valid blockchain transaction hash (unverified or placeholder reference '${rawTxHash}' rejected).`
+    );
+  }
+
+  const normalizedHash = lower.replace(/[^a-z0-9_-]/g, '');
+  if (normalizedHash.length < 8) {
+    throw new Error(
+      `Deposit transaction ${txId} is missing a valid blockchain transaction hash (normalized reference too short).`
+    );
+  }
+
+  return {
+    rawTxHash,
+    normalizedHash,
+    paymentRefDocId: `txhash_${normalizedHash}`,
+  };
+}
 
 const OFFICIAL_DAILY_REWARD_SCHEDULE: Record<number, number> = {
   1: 0.5,
@@ -170,19 +232,42 @@ export const onTransactionStatusChanged = functions.firestore
       afterData.type === 'DEPOSIT' &&
       ['PENDING_CONFIRMATION', 'PENDING_REVIEW'].includes(String(beforeData.status)) &&
       ['COMPLETED', 'APPROVED', 'CONFIRMED'].includes(String(afterData.status)) &&
-      !afterData.walletCredited
+      !afterData.walletCredited &&
+      !afterData.walletSettled
     ) {
-      if (!Number.isFinite(amount) || amount < assetRule.minDeposit) {
+      if (!Number.isFinite(amount) || amount <= 0 || amount < assetRule.minDeposit) {
         console.error(`[onTransactionStatusChanged] Deposit ${txId} amount ${amount} below minimum ${assetRule.minDeposit}`);
+        await txRef.update({
+          settlementStatus: 'AWAITING_VERIFICATION',
+          settlementWarning: `Invalid deposit amount (${amount} ${assetSymbol}). Minimum required is ${assetRule.minDeposit} ${assetSymbol}.`,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
         return null;
       }
 
+      let refInfo: { rawTxHash: string; normalizedHash: string; paymentRefDocId: string };
+      try {
+        refInfo = normalizeAndValidateDepositReference(afterData.txHash, txId);
+      } catch (refErr: any) {
+        const msg = refErr?.message || `Deposit ${txId} missing valid txHash; skipping credit.`;
+        console.error(`[onTransactionStatusChanged] ${msg}`);
+        await txRef.update({
+          settlementStatus: 'AWAITING_VERIFICATION',
+          settlementWarning: msg,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return null;
+      }
+
+      const paymentRefDoc = db.doc(`paymentReferences/${refInfo.paymentRefDocId}`);
+
       await db.runTransaction(async (transaction) => {
         // ALL READS FIRST
-        const [freshTx, settlementSnap, walletSnap] = await Promise.all([
+        const [freshTx, settlementSnap, walletSnap, paymentRefSnap] = await Promise.all([
           transaction.get(txRef),
           transaction.get(settlementRef),
           transaction.get(walletRef),
+          transaction.get(paymentRefDoc),
         ]);
 
         if (!freshTx.exists) return;
@@ -193,51 +278,96 @@ export const onTransactionStatusChanged = functions.firestore
 
         validateOwnershipAndNotRejected(freshData, userId, txId);
 
-        const txHash = typeof freshData.txHash === 'string' ? freshData.txHash.trim() : '';
-        if (txHash.length < 8) {
-          console.error(`[onTransactionStatusChanged] Deposit ${txId} missing valid txHash; skipping credit.`);
-          return;
+        const verifiedRef = normalizeAndValidateDepositReference(freshData.txHash, txId);
+        if (paymentRefSnap.exists) {
+          const existingRef = paymentRefSnap.data() || {};
+          if (existingRef.txId !== txId || existingRef.userId !== userId) {
+            const dupMsg = `Duplicate payment reference: transaction hash '${verifiedRef.rawTxHash}' has already been credited to deposit '${existingRef.txId}'.`;
+            console.error(`[onTransactionStatusChanged] ${dupMsg}`);
+            transaction.update(txRef, {
+              settlementStatus: 'AWAITING_VERIFICATION',
+              settlementWarning: dupMsg,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+            return;
+          }
         }
 
-        const currentBalance = walletSnap.exists ? Number(walletSnap.data()?.balance) || 0 : 0;
-        const currentLocked = walletSnap.exists ? Number(walletSnap.data()?.lockedBalance) || 0 : 0;
+        const walletData = walletSnap.exists ? walletSnap.data() || {} : {};
+        const currentBalance = round8(Number(walletData.balance) || 0);
+        const currentLocked = round8(Number(walletData.lockedBalance) || 0);
         const newBalance = round8(currentBalance + amount);
         const settlementId = `settle_${txId}`;
+        const resolvedPriceUSD =
+          Number(freshData.amountUSD) > 0 && amount > 0
+            ? Number((Number(freshData.amountUSD) / amount).toFixed(4))
+            : Number(walletData.priceUSD || assetRule.defaultUsdRate);
+        const resolvedChange24h =
+          walletData.change24h !== undefined ? Number(walletData.change24h) : 0;
 
         // WRITES AFTER ALL READS
+        // 1. Reserve unique global payment reference
+        transaction.set(paymentRefDoc, {
+          id: verifiedRef.paymentRefDocId,
+          txHash: verifiedRef.rawTxHash,
+          normalizedHash: verifiedRef.normalizedHash,
+          userId,
+          txId,
+          type: 'DEPOSIT',
+          asset: assetSymbol,
+          amount,
+          status: 'CREDITED',
+          approvedBy: freshData.approvedBy || 'firebase-console-trigger',
+          settledAt: FieldValue.serverTimestamp(),
+        });
+
+        // 2. Credit wallet with full authoritative metadata
         transaction.set(
           walletRef,
           {
             symbol: assetSymbol,
+            name: walletData.name || assetRule.name,
             balance: newBalance,
             lockedBalance: currentLocked,
+            priceUSD: resolvedPriceUSD,
+            change24h: resolvedChange24h,
             updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
 
+        // 3. Create immutable settlement ledger receipt
         transaction.set(settlementRef, {
           id: settlementId,
           txId,
           userId,
           type: 'DEPOSIT',
           action: 'APPROVE_DEPOSIT',
+          status: 'COMPLETED',
           asset: assetSymbol,
           amount,
+          txHash: verifiedRef.rawTxHash,
+          paymentReferenceId: verifiedRef.paymentRefDocId,
           previousBalance: currentBalance,
           newBalance,
+          previousLockedBalance: currentLocked,
+          newLockedBalance: currentLocked,
           approvedBy: freshData.approvedBy || 'firebase-console-trigger',
           settledAt: FieldValue.serverTimestamp(),
         });
 
+        // 4. Update deposit transaction settlement state
         transaction.update(txRef, {
           status: 'COMPLETED',
           walletCredited: true,
           walletSettled: true,
           settlementId,
+          paymentReferenceId: verifiedRef.paymentRefDocId,
           settlementStatus: 'CREDITED',
           creditedAmount: amount,
           creditedAsset: assetSymbol,
+          previousBalance: currentBalance,
+          newBalance,
           creditedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
@@ -592,7 +722,7 @@ export const onDepositStatusChanged = onTransactionStatusChanged;
  */
 export const approveDeposit = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
   const admin = requireCallableAdmin(context);
-  const { userId, txId, note } = data;
+  const { userId, txId, note, allowManualCompletedStatus = true } = data || {};
   if (!userId || !txId) {
     throw new functions.https.HttpsError('invalid-argument', 'userId and txId are required.');
   }
@@ -626,10 +756,14 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
       };
     }
 
-    if (txData.status !== 'PENDING_CONFIRMATION' && txData.status !== 'PENDING_REVIEW') {
+    const allowedStatuses = allowManualCompletedStatus
+      ? ['PENDING_CONFIRMATION', 'PENDING_REVIEW', 'CONFIRMED', 'APPROVED', 'COMPLETED']
+      : ['PENDING_CONFIRMATION', 'PENDING_REVIEW'];
+
+    if (!allowedStatuses.includes(String(txData.status))) {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        `Cannot approve deposit in status ${txData.status}. Only PENDING_CONFIRMATION or PENDING_REVIEW is eligible.`
+        `Cannot approve deposit in status ${txData.status}. Eligible statuses: ${allowedStatuses.join(', ')}.`
       );
     }
 
@@ -640,31 +774,76 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
     }
 
     const amount = round8(Number(txData.amount));
-    if (!Number.isFinite(amount) || amount < assetRule.minDeposit) {
+    if (!Number.isFinite(amount) || amount <= 0 || amount < assetRule.minDeposit) {
       throw new functions.https.HttpsError(
         'invalid-argument',
         `Invalid deposit amount: ${txData.amount} (minimum is ${assetRule.minDeposit} ${assetSymbol})`
       );
     }
 
-    const txHash = typeof txData.txHash === 'string' ? txData.txHash.trim() : '';
-    if (txHash.length < 8) {
-      throw new functions.https.HttpsError('failed-precondition', `Deposit ${txId} is missing a valid blockchain txHash.`);
+    let verifiedRef: { rawTxHash: string; normalizedHash: string; paymentRefDocId: string };
+    try {
+      verifiedRef = normalizeAndValidateDepositReference(txData.txHash, txId);
+    } catch (refErr: any) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        refErr?.message || `Deposit ${txId} is missing a valid blockchain txHash.`
+      );
     }
 
     const walletRef = db.doc(`users/${userId}/wallet/${assetSymbol}`);
-    const walletSnap = await transaction.get(walletRef);
-    const currentBalance = walletSnap.exists ? Number(walletSnap.data()?.balance) || 0 : 0;
-    const currentLocked = walletSnap.exists ? Number(walletSnap.data()?.lockedBalance) || 0 : 0;
+    const paymentRefDoc = db.doc(`paymentReferences/${verifiedRef.paymentRefDocId}`);
+    const [walletSnap, paymentRefSnap] = await Promise.all([
+      transaction.get(walletRef),
+      transaction.get(paymentRefDoc),
+    ]);
+
+    if (paymentRefSnap.exists) {
+      const existingRef = paymentRefSnap.data() || {};
+      if (existingRef.txId !== txId || existingRef.userId !== userId) {
+        throw new functions.https.HttpsError(
+          'already-exists',
+          `Duplicate payment reference: transaction hash '${verifiedRef.rawTxHash}' has already been credited to deposit '${existingRef.txId}'.`
+        );
+      }
+    }
+
+    const walletData = walletSnap.exists ? walletSnap.data() || {} : {};
+    const currentBalance = round8(Number(walletData.balance) || 0);
+    const currentLocked = round8(Number(walletData.lockedBalance) || 0);
     const newBalance = round8(currentBalance + amount);
     const settlementId = `settle_${txId}`;
+    const resolvedPriceUSD =
+      Number(txData.amountUSD) > 0 && amount > 0
+        ? Number((Number(txData.amountUSD) / amount).toFixed(4))
+        : Number(walletData.priceUSD || assetRule.defaultUsdRate);
+    const resolvedChange24h =
+      walletData.change24h !== undefined ? Number(walletData.change24h) : 0;
+
+    transaction.set(paymentRefDoc, {
+      id: verifiedRef.paymentRefDocId,
+      txHash: verifiedRef.rawTxHash,
+      normalizedHash: verifiedRef.normalizedHash,
+      userId,
+      txId,
+      type: 'DEPOSIT',
+      asset: assetSymbol,
+      amount,
+      status: 'CREDITED',
+      approvedBy: admin.email,
+      approvedByUid: admin.uid,
+      settledAt: FieldValue.serverTimestamp(),
+    });
 
     transaction.set(
       walletRef,
       {
         symbol: assetSymbol,
+        name: walletData.name || assetRule.name,
         balance: newBalance,
         lockedBalance: currentLocked,
+        priceUSD: resolvedPriceUSD,
+        change24h: resolvedChange24h,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
@@ -676,10 +855,15 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
       userId,
       type: 'DEPOSIT',
       action: 'APPROVE_DEPOSIT',
+      status: 'COMPLETED',
       asset: assetSymbol,
       amount,
+      txHash: verifiedRef.rawTxHash,
+      paymentReferenceId: verifiedRef.paymentRefDocId,
       previousBalance: currentBalance,
       newBalance,
+      previousLockedBalance: currentLocked,
+      newLockedBalance: currentLocked,
       approvedBy: admin.email,
       approvedByUid: admin.uid,
       settledAt: FieldValue.serverTimestamp(),
@@ -690,9 +874,12 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
       walletCredited: true,
       walletSettled: true,
       settlementId,
+      paymentReferenceId: verifiedRef.paymentRefDocId,
       settlementStatus: 'CREDITED',
       creditedAmount: amount,
       creditedAsset: assetSymbol,
+      previousBalance: currentBalance,
+      newBalance,
       approvedBy: admin.email,
       approvedByUid: admin.uid,
       approvedAt: FieldValue.serverTimestamp(),
@@ -707,6 +894,7 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
       newBalance,
       creditedAmount: amount,
       creditedAsset: assetSymbol,
+      paymentReferenceId: verifiedRef.paymentRefDocId,
     };
   });
 });

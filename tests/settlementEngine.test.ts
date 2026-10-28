@@ -1278,12 +1278,411 @@ async function runTests() {
     console.log(
       '✓ Test 13 Passed: Withdrawals fail closed without client fallback and login transitions deterministically route to Home'
     );
+
+    // ---------------------------------------------------------------------------
+    // Test 14: Authorized Reconciliation of Unsettled CONFIRMED & APPROVED Deposits vs. Ordinary Rejection
+    // ---------------------------------------------------------------------------
+    const confirmedUser = 'user_confirmed_reconcile';
+    db.seed(`users/${confirmedUser}/wallet/USDT`, {
+      symbol: 'USDT',
+      name: 'Tether USD',
+      balance: 50,
+      lockedBalance: 10,
+      priceUSD: 1,
+      change24h: 0.02,
+    });
+    db.seed(`users/${confirmedUser}/transactions/TX-CONFIRMED-001`, {
+      id: 'TX-CONFIRMED-001',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 75.25,
+      amountUSD: 75.25,
+      txHash: '0x777788889999aaaabbbbccccddddeeeeffff0001',
+      status: 'CONFIRMED',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    // 14a. Ordinary non-reconciliation attempt (allowManualCompletedStatus: false) must be rejected
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: confirmedUser,
+          txId: 'TX-CONFIRMED-001',
+          admin: adminActor,
+          allowManualCompletedStatus: false,
+        }),
+      /Standard approval requires a pending state/i,
+      'Ordinary non-reconciliation settlement attempt must reject CONFIRMED status'
+    );
+    assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 50, 'Balance must not change on rejected ordinary call');
+
+    // 14b. Authorized reconciliation (allowManualCompletedStatus: true) credits exactly once, even under concurrent calls
+    const [confRes1, confRes2] = await Promise.all([
+      settleDepositApproval(db, {
+        userId: confirmedUser,
+        txId: 'TX-CONFIRMED-001',
+        admin: adminActor,
+        allowManualCompletedStatus: true,
+      }),
+      settleDepositApproval(db, {
+        userId: confirmedUser,
+        txId: 'TX-CONFIRMED-001',
+        admin: adminActor,
+        allowManualCompletedStatus: true,
+      }),
+    ]);
+    assert.equal(confRes1.alreadyProcessed, false, 'First authorized reconciliation of CONFIRMED deposit must succeed');
+    assert.equal(confRes2.alreadyProcessed, true, 'Concurrent reconciliation of CONFIRMED deposit must be idempotent');
+    assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 125.25, 'Balance must increase from 50 to 125.25');
+    assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.lockedBalance, 10, 'lockedBalance must remain untouched at 10');
+    assert.equal(db.peek(`users/${confirmedUser}/transactions/TX-CONFIRMED-001`)?.status, 'COMPLETED');
+    assert.equal(db.peek(`users/${confirmedUser}/transactions/TX-CONFIRMED-001`)?.walletCredited, true);
+    assert.equal(
+      db.peek('paymentReferences/txhash_0x777788889999aaaabbbbccccddddeeeeffff0001')?.txId,
+      'TX-CONFIRMED-001',
+      'Global paymentReference document must be recorded'
+    );
+    console.log(
+      '✓ Test 14 Passed: Unsettled CONFIRMED deposit rejected on ordinary call and atomically credited once via authorized reconciliation'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 15: Global Payment Reference Uniqueness Across Multiple Deposits & Users
+    // ---------------------------------------------------------------------------
+    // 15a. Same user attempts to reuse the settled txHash in a second deposit
+    db.seed(`users/${confirmedUser}/transactions/TX-DUP-HASH-SAME-USER`, {
+      id: 'TX-DUP-HASH-SAME-USER',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 100,
+      amountUSD: 100,
+      txHash: '  0X777788889999AAAABBBBCCCCDDDDEEEEFFFF0001  ', // case + whitespace variation of already-settled hash
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: confirmedUser,
+          txId: 'TX-DUP-HASH-SAME-USER',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /Duplicate payment reference/i,
+      'Reusing an already-credited txHash (even with different case/whitespace) must be rejected'
+    );
+    assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 125.25, 'Duplicate txHash must not credit wallet');
+
+    // 15b. A different user attempts to reuse the settled txHash in their own deposit
+    const secondUser = 'user_attacker_002';
+    db.seed(`users/${secondUser}/wallet/USDT`, {
+      symbol: 'USDT',
+      name: 'Tether USD',
+      balance: 0,
+      lockedBalance: 0,
+      priceUSD: 1,
+      change24h: 0,
+    });
+    db.seed(`users/${secondUser}/transactions/TX-DUP-HASH-OTHER-USER`, {
+      id: 'TX-DUP-HASH-OTHER-USER',
+      userId: secondUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 500,
+      amountUSD: 500,
+      txHash: '0x777788889999aaaabbbbccccddddeeeeffff0001',
+      status: 'CONFIRMED',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: secondUser,
+          txId: 'TX-DUP-HASH-OTHER-USER',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /Duplicate payment reference/i,
+      'Reusing an already-credited txHash across a different user account must be rejected'
+    );
+    assert.equal(db.peek(`users/${secondUser}/wallet/USDT`)?.balance, 0, 'Attacker wallet balance must remain 0');
+    assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 125.25, 'Original user wallet balance must remain 125.25');
+    console.log(
+      '✓ Test 15 Passed: Global paymentReferences/txhash_<normalized> blocks duplicate txHash replay across same and different users'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 16: Exhaustive Boundary & Invalid Input Rejections (Amounts, Assets, References, Types, Ownership, Rejected Status)
+    // ---------------------------------------------------------------------------
+    // 16a. Zero or negative amount
+    db.seed(`users/${confirmedUser}/transactions/TX-BAD-ZERO`, {
+      id: 'TX-BAD-ZERO',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: -20,
+      txHash: '0xvalidhashforzeroamounttest123456',
+      status: 'PENDING_CONFIRMATION',
+    });
+    await assert.rejects(
+      () => settleDepositApproval(db, { userId: confirmedUser, txId: 'TX-BAD-ZERO', admin: adminActor }),
+      /Invalid deposit amount/i
+    );
+
+    // 16b. Below minimum deposit (USDT minDeposit = 10)
+    db.seed(`users/${confirmedUser}/transactions/TX-BAD-MIN`, {
+      id: 'TX-BAD-MIN',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 5,
+      txHash: '0xvalidhashforminamounttest1234567',
+      status: 'PENDING_CONFIRMATION',
+    });
+    await assert.rejects(
+      () => settleDepositApproval(db, { userId: confirmedUser, txId: 'TX-BAD-MIN', admin: adminActor }),
+      /below the minimum required deposit/i
+    );
+
+    // 16c. Unsupported asset (DOGE)
+    db.seed(`users/${confirmedUser}/transactions/TX-BAD-ASSET`, {
+      id: 'TX-BAD-ASSET',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'DOGE',
+      amount: 100,
+      txHash: '0xvalidhashforbadassettest12345678',
+      status: 'PENDING_CONFIRMATION',
+    });
+    await assert.rejects(
+      () => settleDepositApproval(db, { userId: confirmedUser, txId: 'TX-BAD-ASSET', admin: adminActor }),
+      /Unsupported or missing deposit asset symbol/i
+    );
+
+    // 16d. Placeholder / fake / repeated-char txHash ('internal', '0x000000000000')
+    db.seed(`users/${confirmedUser}/transactions/TX-BAD-HASH-PLACEHOLDER`, {
+      id: 'TX-BAD-HASH-PLACEHOLDER',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 50,
+      txHash: '0x0000000000000000',
+      status: 'CONFIRMED',
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: confirmedUser,
+          txId: 'TX-BAD-HASH-PLACEHOLDER',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /missing a valid blockchain transaction hash/i
+    );
+
+    // 16e. Non-deposit transaction passed to settleDepositApproval
+    db.seed(`users/${confirmedUser}/transactions/TX-NOT-DEPOSIT`, {
+      id: 'TX-NOT-DEPOSIT',
+      userId: confirmedUser,
+      type: 'WITHDRAWAL',
+      asset: 'USDT',
+      amount: 50,
+      txHash: '0xvalidhashfornondeposit123456789',
+      status: 'PENDING_CONFIRMATION',
+    });
+    await assert.rejects(
+      () => settleDepositApproval(db, { userId: confirmedUser, txId: 'TX-NOT-DEPOSIT', admin: adminActor }),
+      /Invalid transaction type 'WITHDRAWAL'/i
+    );
+
+    // 16f. Mismatched userId on transaction document
+    db.seed(`users/${confirmedUser}/transactions/TX-MISMATCH-USER`, {
+      id: 'TX-MISMATCH-USER',
+      userId: 'different_owner_uid',
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 50,
+      txHash: '0xvalidhashformismatchuser1234567',
+      status: 'PENDING_CONFIRMATION',
+    });
+    await assert.rejects(
+      () => settleDepositApproval(db, { userId: confirmedUser, txId: 'TX-MISMATCH-USER', admin: adminActor }),
+      /Transaction ownership mismatch/i
+    );
+
+    // 16g. Already REJECTED deposit cannot be approved even with allowManualCompletedStatus: true
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId,
+          txId: 'TX-DEP-200', // rejected in Test 2
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /rejection\/failure markers/i
+    );
+
+    assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 125.25, 'All invalid deposit attempts must leave balance untouched');
+    console.log(
+      '✓ Test 16 Passed: Zero/negative, below-min, unsupported asset, malformed/placeholder hash, non-deposit, userId mismatch, and rejected deposits all fail closed'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 17: Wallet Metadata Consistency on New & Existing Asset Documents (BTC / ETH)
+    // ---------------------------------------------------------------------------
+    db.seed(`users/${confirmedUser}/transactions/TX-BTC-NEW-WALLET`, {
+      id: 'TX-BTC-NEW-WALLET',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'BTC',
+      amount: 0.01,
+      amountUSD: 942.5,
+      txHash: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+      status: 'APPROVED',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    const btcRes = await settleDepositApproval(db, {
+      userId: confirmedUser,
+      txId: 'TX-BTC-NEW-WALLET',
+      admin: adminActor,
+      allowManualCompletedStatus: true,
+    });
+    assert.equal(btcRes.alreadyProcessed, false);
+    const btcWalletDoc = db.peek(`users/${confirmedUser}/wallet/BTC`);
+    assert.ok(btcWalletDoc, 'New BTC wallet document must be created');
+    assert.equal(btcWalletDoc?.symbol, 'BTC');
+    assert.equal(btcWalletDoc?.name, 'Bitcoin');
+    assert.equal(btcWalletDoc?.balance, 0.01);
+    assert.equal(btcWalletDoc?.lockedBalance, 0);
+    assert.equal(btcWalletDoc?.priceUSD, 94250);
+    assert.equal(typeof btcWalletDoc?.change24h, 'number');
+    assert.ok(btcWalletDoc?.updatedAt);
+    console.log(
+      '✓ Test 17 Passed: New and existing wallet asset documents maintain complete authoritative metadata (symbol, name, balance, lockedBalance, priceUSD, change24h)'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 18: Server /api/admin/pending-requests & /api/admin/reconcile-settlements Auto-Reconcile vs. Unverified CONFIRMED Handling
+    // ---------------------------------------------------------------------------
+    // Seed one valid unsettled CONFIRMED deposit and one unverified CONFIRMED deposit (missing valid txHash)
+    db.seed(`users/${userId}/transactions/TX-SERVER-CONFIRMED-VALID`, {
+      id: 'TX-SERVER-CONFIRMED-VALID',
+      userId,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 48,
+      amountUSD: 48,
+      txHash: '0xserverautoconfirmedvalid9988776655',
+      status: 'CONFIRMED',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`users/${userId}/transactions/TX-SERVER-CONFIRMED-UNVERIFIED`, {
+      id: 'TX-SERVER-CONFIRMED-UNVERIFIED',
+      userId,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 250,
+      amountUSD: 250,
+      txHash: 'internal', // unverified placeholder hash
+      status: 'CONFIRMED',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    setFirestoreProviderForTesting(() => ({
+      doc: (p: string) => db.doc(p),
+      runTransaction: (fn: any) => db.runTransaction(fn),
+      collection: (colPath: string) => ({
+        limit: () => ({
+          get: async () => {
+            if (colPath === 'users') {
+              return {
+                docs: [{ id: userId, data: () => ({ id: userId, email: 'miner@example.com' }) }],
+              };
+            }
+            if (colPath === `users/${userId}/transactions`) {
+              const ids = [
+                'TX-FALLBACK-DEP',
+                'TX-SERVER-CONFIRMED-VALID',
+                'TX-SERVER-CONFIRMED-UNVERIFIED',
+              ];
+              return {
+                docs: ids
+                  .map((txId) => {
+                    const raw = db.peek(`users/${userId}/transactions/${txId}`);
+                    if (!raw) return null;
+                    return {
+                      id: txId,
+                      ref: { parent: { parent: { id: userId } } },
+                      data: () => raw,
+                    };
+                  })
+                  .filter(Boolean),
+              };
+            }
+            return { docs: [] };
+          },
+        }),
+      }),
+      collectionGroup: () => ({
+        where: () => ({
+          where: () => ({
+            limit: () => ({
+              get: async () => {
+                const indexErr: any = new Error('9 FAILED_PRECONDITION: requires an index');
+                indexErr.code = 9;
+                throw indexErr;
+              },
+            }),
+          }),
+        }),
+      }),
+    }));
+
+    const preBalance = db.peek(`users/${userId}/wallet/USDT`)?.balance || 0;
+    const autoReconcileQueueRes = await fetch(`${baseUrl}/api/admin/pending-requests`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-admin-token' },
+    });
+    assert.equal(autoReconcileQueueRes.status, 200);
+    const autoReconcileQueueBody = await autoReconcileQueueRes.json();
+
+    // Valid CONFIRMED deposit was auto-reconciled and credited (+48 USDT)
+    assert.equal(autoReconcileQueueBody.autoReconciled.length, 1);
+    assert.equal(autoReconcileQueueBody.autoReconciled[0].txId, 'TX-SERVER-CONFIRMED-VALID');
+    assert.equal(
+      db.peek(`users/${userId}/wallet/USDT`)?.balance,
+      preBalance + 48,
+      'Valid CONFIRMED deposit must auto-credit +48 USDT once'
+    );
+    assert.equal(db.peek(`users/${userId}/transactions/TX-SERVER-CONFIRMED-VALID`)?.walletCredited, true);
+
+    // Unverified CONFIRMED deposit was NOT credited and remains surfaced in deposits with settlementWarning
+    const unverifiedInQueue = autoReconcileQueueBody.deposits.find(
+      (d: any) => d.id === 'TX-SERVER-CONFIRMED-UNVERIFIED'
+    );
+    assert.ok(unverifiedInQueue, 'Unverified CONFIRMED deposit must remain surfaced in admin queue');
+    assert.equal(unverifiedInQueue.walletCredited, false);
+    assert.match(String(unverifiedInQueue.settlementWarning), /missing a valid blockchain transaction hash/i);
+    console.log(
+      '✓ Test 18 Passed: Admin queue auto-reconciles valid CONFIRMED deposits once while blocking unverified CONFIRMED deposits with warning'
+    );
   } finally {
     resetServerTestHooks();
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
   }
 
-  console.log('\nALL 13 SETTLEMENT, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
+  console.log('\nALL 18 SETTLEMENT, REPLAY-PROTECTION, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
 }
 
 runTests().catch((err) => {
