@@ -117,6 +117,130 @@ function normalizeAndValidateDepositReference(
   };
 }
 
+function validateIndependentPaymentProof(
+  proof: Record<string, any> | null | undefined,
+  expected: {
+    userId?: string;
+    txId: string;
+    rawTxHash: string;
+    normalizedHash: string;
+    paymentRefDocId: string;
+    assetSymbol: string;
+    amount: number;
+    expectedNetwork?: string;
+  }
+) {
+  const {
+    userId,
+    txId,
+    rawTxHash,
+    normalizedHash,
+    paymentRefDocId,
+    assetSymbol,
+    amount,
+    expectedNetwork,
+  } = expected;
+
+  if (!proof || proof.verified !== true) {
+    throw new Error(
+      `Unverified deposit payment on ${txId}: no independent blockchain/provider verification receipt found for txHash '${rawTxHash}' (verifiedPayments/${paymentRefDocId}). Status changes and plausible transaction hashes cannot credit wallets without verified payment proof.`
+    );
+  }
+
+  if (userId && proof.userId && String(proof.userId).trim() !== String(userId).trim()) {
+    throw new Error(
+      `Duplicate payment reference: verified payment receipt for '${rawTxHash}' is already bound to user '${proof.userId}', not '${userId}'.`
+    );
+  }
+
+  if (proof.txId && String(proof.txId).trim() !== String(txId).trim()) {
+    throw new Error(
+      `Duplicate payment reference: verified payment receipt for '${rawTxHash}' is already bound to deposit transaction '${proof.txId}', not '${txId}'.`
+    );
+  }
+
+  const proofRef = normalizeAndValidateDepositReference(proof.txHash, txId);
+  if (proofRef.normalizedHash !== normalizedHash) {
+    throw new Error(
+      `Payment verification mismatch on ${txId}: receipt txHash '${proof.txHash}' does not match deposit txHash '${rawTxHash}'.`
+    );
+  }
+
+  const txStatus = String(proof.txStatus || '').toUpperCase().trim();
+  if (txStatus !== 'SUCCESS' && txStatus !== 'CONFIRMED') {
+    throw new Error(
+      `Payment verification failed on ${txId}: on-chain/provider transaction status is '${proof.txStatus}' (expected 'SUCCESS' or 'CONFIRMED').`
+    );
+  }
+
+  const proofAsset = String(proof.asset || '').toUpperCase().trim();
+  if (proofAsset !== assetSymbol) {
+    throw new Error(
+      `Payment verification mismatch on ${txId}: verified asset '${proofAsset}' does not match deposit asset '${assetSymbol}'.`
+    );
+  }
+
+  const proofAmount = Number(Number(proof.amount || 0).toFixed(8));
+  if (!Number.isFinite(proofAmount) || Math.abs(proofAmount - amount) > 1e-8) {
+    throw new Error(
+      `Payment verification mismatch on ${txId}: verified amount (${proof.amount} ${proofAsset}) does not match claimed deposit amount (${amount} ${assetSymbol}).`
+    );
+  }
+
+  const proofNetwork = String(proof.network || '').trim();
+  if (!proofNetwork) {
+    throw new Error(`Payment verification failed on ${txId}: verified receipt is missing blockchain network.`);
+  }
+  if (expectedNetwork && String(expectedNetwork).trim().length > 0) {
+    const cleanExpectedNet = String(expectedNetwork).toUpperCase().trim();
+    const cleanProofNet = proofNetwork.toUpperCase();
+    const bothTrc20 =
+      (cleanExpectedNet.includes('TRC20') || cleanExpectedNet.includes('TRON')) &&
+      (cleanProofNet.includes('TRC20') || cleanProofNet.includes('TRON'));
+    if (
+      !bothTrc20 &&
+      !cleanProofNet.includes(cleanExpectedNet) &&
+      !cleanExpectedNet.includes(cleanProofNet)
+    ) {
+      throw new Error(
+        `Payment verification mismatch on ${txId}: verified network '${proofNetwork}' does not match deposit network '${expectedNetwork}'.`
+      );
+    }
+  }
+
+  const recipientAddress = String(proof.recipientAddress || '').trim();
+  const expectedTreasury = String(proof.expectedTreasuryAddress || '').trim();
+  const isRecipientVerified =
+    proof.recipientVerified === true ||
+    (recipientAddress.length >= 10 && expectedTreasury.length >= 10 && recipientAddress === expectedTreasury);
+  if (recipientAddress.length < 10 || !isRecipientVerified) {
+    throw new Error(
+      `Payment verification failed on ${txId}: recipient address '${recipientAddress}' is not a verified platform custodial treasury address.`
+    );
+  }
+
+  const confirmations = Number(proof.confirmations);
+  const requiredConfirmations = Math.max(1, Number(proof.requiredConfirmations || 1));
+  if (!Number.isFinite(confirmations) || confirmations < requiredConfirmations) {
+    throw new Error(
+      `Payment verification failed on ${txId}: insufficient block confirmations (${proof.confirmations} < ${requiredConfirmations}).`
+    );
+  }
+
+  return {
+    verified: true,
+    provider: String(proof.provider || 'VERIFIED_PROVIDER'),
+    txHash: proofRef.rawTxHash,
+    network: proofNetwork,
+    recipientAddress,
+    asset: assetSymbol,
+    amount: proofAmount,
+    txStatus,
+    confirmations,
+    requiredConfirmations,
+  };
+}
+
 const OFFICIAL_DAILY_REWARD_SCHEDULE: Record<number, number> = {
   1: 0.5,
   2: 0.75,
@@ -260,14 +384,16 @@ export const onTransactionStatusChanged = functions.firestore
       }
 
       const paymentRefDoc = db.doc(`paymentReferences/${refInfo.paymentRefDocId}`);
+      const verifiedPaymentDoc = db.doc(`verifiedPayments/${refInfo.paymentRefDocId}`);
 
       await db.runTransaction(async (transaction) => {
         // ALL READS FIRST
-        const [freshTx, settlementSnap, walletSnap, paymentRefSnap] = await Promise.all([
+        const [freshTx, settlementSnap, walletSnap, paymentRefSnap, verifiedPaymentSnap] = await Promise.all([
           transaction.get(txRef),
           transaction.get(settlementRef),
           transaction.get(walletRef),
           transaction.get(paymentRefDoc),
+          transaction.get(verifiedPaymentDoc),
         ]);
 
         if (!freshTx.exists) return;
@@ -293,6 +419,34 @@ export const onTransactionStatusChanged = functions.firestore
           }
         }
 
+        let verifiedProof: ReturnType<typeof validateIndependentPaymentProof>;
+        try {
+          verifiedProof = validateIndependentPaymentProof(
+            verifiedPaymentSnap.exists ? verifiedPaymentSnap.data() : null,
+            {
+              userId,
+              txId,
+              rawTxHash: verifiedRef.rawTxHash,
+              normalizedHash: verifiedRef.normalizedHash,
+              paymentRefDocId: verifiedRef.paymentRefDocId,
+              assetSymbol,
+              amount,
+              expectedNetwork: freshData.network,
+            }
+          );
+        } catch (proofErr: any) {
+          const proofMsg =
+            proofErr?.message ||
+            'Awaiting independent blockchain/provider verification before wallet credit.';
+          console.error(`[onTransactionStatusChanged] ${proofMsg}`);
+          transaction.update(txRef, {
+            settlementStatus: 'AWAITING_VERIFICATION',
+            settlementWarning: proofMsg,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          return;
+        }
+
         const walletData = walletSnap.exists ? walletSnap.data() || {} : {};
         const currentBalance = round8(Number(walletData.balance) || 0);
         const currentLocked = round8(Number(walletData.lockedBalance) || 0);
@@ -316,6 +470,10 @@ export const onTransactionStatusChanged = functions.firestore
           type: 'DEPOSIT',
           asset: assetSymbol,
           amount,
+          network: verifiedProof.network,
+          recipientAddress: verifiedProof.recipientAddress,
+          confirmations: verifiedProof.confirmations,
+          verificationProvider: verifiedProof.provider,
           status: 'CREDITED',
           approvedBy: freshData.approvedBy || 'firebase-console-trigger',
           settledAt: FieldValue.serverTimestamp(),
@@ -793,9 +951,11 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
 
     const walletRef = db.doc(`users/${userId}/wallet/${assetSymbol}`);
     const paymentRefDoc = db.doc(`paymentReferences/${verifiedRef.paymentRefDocId}`);
-    const [walletSnap, paymentRefSnap] = await Promise.all([
+    const verifiedPaymentDoc = db.doc(`verifiedPayments/${verifiedRef.paymentRefDocId}`);
+    const [walletSnap, paymentRefSnap, verifiedPaymentSnap] = await Promise.all([
       transaction.get(walletRef),
       transaction.get(paymentRefDoc),
+      transaction.get(verifiedPaymentDoc),
     ]);
 
     if (paymentRefSnap.exists) {
@@ -806,6 +966,28 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
           `Duplicate payment reference: transaction hash '${verifiedRef.rawTxHash}' has already been credited to deposit '${existingRef.txId}'.`
         );
       }
+    }
+
+    let verifiedProof: ReturnType<typeof validateIndependentPaymentProof>;
+    try {
+      verifiedProof = validateIndependentPaymentProof(
+        verifiedPaymentSnap.exists ? verifiedPaymentSnap.data() : null,
+        {
+          userId,
+          txId,
+          rawTxHash: verifiedRef.rawTxHash,
+          normalizedHash: verifiedRef.normalizedHash,
+          paymentRefDocId: verifiedRef.paymentRefDocId,
+          assetSymbol,
+          amount,
+          expectedNetwork: txData.network,
+        }
+      );
+    } catch (proofErr: any) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        proofErr?.message || `Deposit ${txId} lacks independent payment verification.`
+      );
     }
 
     const walletData = walletSnap.exists ? walletSnap.data() || {} : {};
@@ -829,6 +1011,10 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
       type: 'DEPOSIT',
       asset: assetSymbol,
       amount,
+      network: verifiedProof.network,
+      recipientAddress: verifiedProof.recipientAddress,
+      confirmations: verifiedProof.confirmations,
+      verificationProvider: verifiedProof.provider,
       status: 'CREDITED',
       approvedBy: admin.email,
       approvedByUid: admin.uid,

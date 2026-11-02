@@ -22,7 +22,13 @@ import { DepositModal } from '../modals/DepositModal';
 import { WithdrawModal } from '../modals/WithdrawModal';
 import { CoinIcon } from '../ui/CoinIcon';
 import { GradientIcon } from '../ui/GradientIcon';
-import { AdminService, PendingRequestItem, AdminSetupStatus } from '../../services/adminService';
+import {
+  AdminService,
+  PendingRequestItem,
+  AdminSetupStatus,
+  Trc20VerificationResponse,
+  TronContractAndEndpointProbeResponse,
+} from '../../services/adminService';
 
 export const WalletScreen: React.FC = () => {
   const { user, walletAssets, transactions, isOfflineCache, addToast, openAuthModal, refreshWalletState } = useApp();
@@ -44,8 +50,12 @@ export const WalletScreen: React.FC = () => {
   const [loadingPendingRequests, setLoadingPendingRequests] = useState(false);
   const [reconcilingConsole, setReconcilingConsole] = useState(false);
   const [actionInProgressId, setActionInProgressId] = useState<string | null>(null);
+  const [verifyingDepositId, setVerifyingDepositId] = useState<string | null>(null);
+  const [verificationPreviews, setVerificationPreviews] = useState<Record<string, Trc20VerificationResponse>>({});
   const [adminSetupStatus, setAdminSetupStatus] = useState<AdminSetupStatus | null>(null);
   const [showSetupDetails, setShowSetupDetails] = useState(false);
+  const [probingContract, setProbingContract] = useState(false);
+  const [contractProbeResult, setContractProbeResult] = useState<TronContractAndEndpointProbeResponse | null>(null);
 
   const availableUSD = walletAssets.reduce((acc, a) => acc + a.balance * a.usdRate, 0);
   const totalLockedUSD = walletAssets.reduce((acc, a) => acc + a.lockedBalance * a.usdRate, 0);
@@ -76,6 +86,59 @@ export const WalletScreen: React.FC = () => {
       loadAdminData();
     }
   }, [isAuthorizedAdmin]);
+
+  const handleProbeTronContract = async () => {
+    setProbingContract(true);
+    try {
+      const res = await AdminService.checkTronContractAndEndpoints();
+      setContractProbeResult(res);
+      addToast(
+        'Nile Contract & Endpoints Verified',
+        `${res.contract.onChainName} (${res.contract.onChainSymbol}, ${res.contract.onChainDecimals} decimals) confirmed on ${res.chainName} at block #${res.endpoints.latestBlockNumber}.`,
+        'success'
+      );
+    } catch (err: any) {
+      addToast(
+        'Contract Probe Failed',
+        err?.message || 'Read-only TRON contract and endpoint check failed.',
+        'error'
+      );
+    } finally {
+      setProbingContract(false);
+    }
+  };
+
+  const handleVerifyTrc20Deposit = async (userId: string, txId: string, dryRun: boolean) => {
+    setVerifyingDepositId(`${txId}:${dryRun ? 'dry' : 'record'}`);
+    try {
+      const res = await AdminService.verifyTrc20Deposit(userId, txId, {
+        dryRun,
+        autoSettle: false,
+      });
+      setVerificationPreviews((prev) => ({ ...prev, [txId]: res }));
+      if (res.dryRun) {
+        addToast(
+          'Dry-Run Verified (No Writes)',
+          `Confirmed ${res.receipt.amount} USDT on ${res.receipt.chainName} (${res.receipt.confirmations} confs). Zero database writes performed.`,
+          'info'
+        );
+      } else {
+        addToast(
+          'Payment Proof Recorded (No Credit)',
+          'verifiedPayments receipt written. Wallet remains uncredited until separately approved.',
+          'success'
+        );
+      }
+    } catch (err: any) {
+      addToast(
+        dryRun ? 'Dry-Run Check Failed' : 'Verification Failed',
+        err?.message || 'On-chain TRC20 verification failed closed.',
+        'error'
+      );
+    } finally {
+      setVerifyingDepositId(null);
+    }
+  };
 
   const handleApproveDeposit = async (userId: string, txId: string) => {
     setActionInProgressId(txId);
@@ -482,6 +545,92 @@ export const WalletScreen: React.FC = () => {
                       {adminSetupStatus.functionsDeployed ? 'Deployed' : 'Blueprint Ready (/functions/index.ts)'}
                     </span>
                   </div>
+                  {adminSetupStatus.tronVerifier && (
+                    <div className="pt-2 border-t border-[#253144] space-y-1">
+                      <div className="flex justify-between text-[#98A6BA]">
+                        <span>TRON Verifier Network:</span>
+                        <span className="text-[#00D6A3] font-bold uppercase">
+                          {adminSetupStatus.tronVerifier.tronNetwork} ({adminSetupStatus.tronVerifier.chainName})
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#98A6BA]">
+                        <span>Mainnet Verification:</span>
+                        <span className={adminSetupStatus.tronVerifier.mainnetEnabled ? 'text-[#FF4D4D]' : 'text-[#00D6A3]'}>
+                          {adminSetupStatus.tronVerifier.mainnetEnabled ? 'Enabled' : 'Disabled (Testnet Safe)'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#98A6BA]">
+                        <span>Testnet Wallet Credit Guard:</span>
+                        <span className={adminSetupStatus.tronVerifier.testnetCreditBlocked ? 'text-[#00D6A3]' : 'text-[#F3B64B]'}>
+                          {adminSetupStatus.tronVerifier.testnetCreditBlocked
+                            ? 'Blocked (Dry-Run & Proof Only)'
+                            : 'Mainnet Active'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#98A6BA] gap-2">
+                        <span>Pinned USDT Base58:</span>
+                        <span className="text-[#25B9F3] break-all text-right">
+                          {adminSetupStatus.tronVerifier.officialUsdtContract}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#98A6BA] gap-2">
+                        <span>Verified USDT Hex41:</span>
+                        <span className="text-[#25B9F3] break-all text-right">
+                          {adminSetupStatus.tronVerifier.officialUsdtContractHex41}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#98A6BA]">
+                        <span>Confirmation Policy:</span>
+                        <span className="text-[#F4F7FC]">
+                          {adminSetupStatus.tronVerifier.requiredConfirmations} blocks •{' '}
+                          {adminSetupStatus.tronVerifier.requireSolidified ? 'Solidified Required' : 'Unconfirmed OK'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#98A6BA]">
+                        <span>TronGrid API Key:</span>
+                        <span className={adminSetupStatus.tronVerifier.hasTronGridApiKey ? 'text-[#00D6A3]' : 'text-[#F3B64B]'}>
+                          {adminSetupStatus.tronVerifier.hasTronGridApiKey ? 'Configured (Server-Only)' : 'Missing (Set TRONGRID_API_KEY)'}
+                        </span>
+                      </div>
+                      <div className="pt-1.5 flex items-center justify-between gap-2">
+                        <button
+                          onClick={handleProbeTronContract}
+                          disabled={probingContract}
+                          className="w-full py-1.5 px-2.5 rounded-lg bg-[#25B9F3]/15 hover:bg-[#25B9F3]/25 border border-[#25B9F3]/40 text-[#25B9F3] font-sans font-bold text-[10px] transition-all disabled:opacity-50"
+                        >
+                          {probingContract
+                            ? 'Probing Live Nile Contract & Endpoints...'
+                            : 'Probe Nile Contract & Endpoints (Read-Only)'}
+                        </button>
+                      </div>
+                      {contractProbeResult && (
+                        <div className="mt-1.5 p-2 rounded-lg bg-[#0D121C] border border-[#00D6A3]/30 space-y-1 text-[9px] font-mono">
+                          <div className="flex justify-between text-[#00D6A3] font-bold">
+                            <span>LIVE NILE PROBE:</span>
+                            <span>{contractProbeResult.verified ? 'AUTHENTICATED' : 'FAILED'}</span>
+                          </div>
+                          <div className="flex justify-between text-[#98A6BA]">
+                            <span>On-Chain Contract:</span>
+                            <span className="text-[#F4F7FC]">
+                              {contractProbeResult.contract.contractName} ({contractProbeResult.contract.onChainSymbol} • {contractProbeResult.contract.onChainDecimals} decimals)
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#98A6BA]">
+                            <span>Bytecode & ABI:</span>
+                            <span className="text-[#00D6A3]">
+                              {contractProbeResult.contract.bytecodeLengthHexChars} hex chars • {contractProbeResult.contract.transferEventSignature}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#98A6BA]">
+                            <span>Blocks (Full / Solidified):</span>
+                            <span className="text-[#F4F7FC]">
+                              #{contractProbeResult.endpoints.latestBlockNumber} / #{contractProbeResult.endpoints.solidifiedBlockNumber} (lag {contractProbeResult.endpoints.solidificationLagBlocks})
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <ul className="list-disc pl-4 text-[10px] text-[#98A6BA] space-y-0.5 pt-1 border-t border-[#253144]">
                     {adminSetupStatus.notes.map((n, i) => (
                       <li key={i}>{n}</li>
@@ -541,72 +690,145 @@ export const WalletScreen: React.FC = () => {
                       No pending deposits awaiting verification.
                     </div>
                   ) : (
-                    pendingDepositsList.map((deposit) => (
-                      <div
-                        key={deposit.id}
-                        className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
-                      >
-                        <div className="space-y-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono font-extrabold text-[#F4F7FC] text-sm">
-                              +{deposit.amount} {deposit.asset}
-                            </span>
-                            <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
-                              PENDING CONFIRMATION
-                            </span>
-                            {deposit.network && (
-                              <span className="text-[10px] text-[#98A6BA] font-mono">({deposit.network})</span>
-                            )}
-                          </div>
-                          <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-2 flex-wrap">
-                            <span>
-                              User: <strong className="text-[#F4F7FC]">{deposit.userId}</strong>
-                            </span>
-                            <span>•</span>
-                            <span>
-                              TxID: <strong className="text-[#25B9F3]">{deposit.txHash || deposit.id}</strong>
-                            </span>
-                            {deposit.txHash && (
-                              <button
-                                onClick={() => copyTxHash(deposit.txHash)}
-                                className="text-[#98A6BA] hover:text-[#F4F7FC]"
-                                title="Copy Tx Hash"
-                              >
-                                <Copy className="w-3 h-3" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                    pendingDepositsList.map((deposit) => {
+                      const preview = verificationPreviews[deposit.id];
+                      const isDryRunning = verifyingDepositId === `${deposit.id}:dry`;
+                      const isRecordingProof = verifyingDepositId === `${deposit.id}:record`;
+                      const isTestnetCreditBlocked =
+                        deposit.asset === 'USDT' &&
+                        Boolean(adminSetupStatus?.tronVerifier?.testnetCreditBlocked);
+                      return (
+                        <div
+                          key={deposit.id}
+                          className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col gap-3 shadow-xs"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="space-y-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-extrabold text-[#F4F7FC] text-sm">
+                                  +{deposit.amount} {deposit.asset}
+                                </span>
+                                <span className="text-[10px] px-2 py-0.2 rounded font-mono font-semibold bg-[#F3B64B]/15 text-[#F3B64B] border border-[#F3B64B]/30">
+                                  PENDING CONFIRMATION
+                                </span>
+                                {deposit.network && (
+                                  <span className="text-[10px] text-[#98A6BA] font-mono">({deposit.network})</span>
+                                )}
+                              </div>
+                              <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-2 flex-wrap">
+                                <span>
+                                  User: <strong className="text-[#F4F7FC]">{deposit.userId}</strong>
+                                </span>
+                                <span>•</span>
+                                <span className="break-all">
+                                  TxID: <strong className="text-[#25B9F3]">{deposit.txHash || deposit.id}</strong>
+                                </span>
+                                {deposit.txHash && (
+                                  <button
+                                    onClick={() => copyTxHash(deposit.txHash)}
+                                    className="text-[#98A6BA] hover:text-[#F4F7FC]"
+                                    title="Copy Tx Hash"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            onClick={() => handleRejectDeposit(deposit.userId, deposit.id)}
-                            disabled={actionInProgressId === deposit.id}
-                            className="py-1.5 px-3 rounded-xl bg-[#080B12] hover:bg-[#FF4D4D]/20 text-[#FF4D4D] border border-[#FF4D4D]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
-                          >
-                            <XCircle className="w-3.5 h-3.5" />
-                            <span>Reject</span>
-                          </button>
-                          <button
-                            onClick={() => handleApproveDeposit(deposit.userId, deposit.id)}
-                            disabled={actionInProgressId === deposit.id}
-                            className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
-                          >
-                            {actionInProgressId === deposit.id ? (
-                              <>
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                <span>Crediting...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Check className="w-3.5 h-3.5 stroke-[3px]" />
-                                <span>Approve &amp; Credit Balance</span>
-                              </>
-                            )}
-                          </button>
+                            <div className="flex items-center gap-2 flex-wrap shrink-0">
+                              {deposit.asset === 'USDT' && (
+                                <>
+                                  <button
+                                    onClick={() => handleVerifyTrc20Deposit(deposit.userId, deposit.id, true)}
+                                    disabled={Boolean(verifyingDepositId) || actionInProgressId === deposit.id}
+                                    className="py-1.5 px-2.5 rounded-xl bg-[#25B9F3]/15 hover:bg-[#25B9F3]/25 text-[#25B9F3] border border-[#25B9F3]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    title="Read-only TronGrid check (zero database writes, zero wallet credit)"
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${isDryRunning ? 'animate-spin' : ''}`} />
+                                    <span>{isDryRunning ? 'Checking...' : 'Dry-Run Check'}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleVerifyTrc20Deposit(deposit.userId, deposit.id, false)}
+                                    disabled={Boolean(verifyingDepositId) || actionInProgressId === deposit.id}
+                                    className="py-1.5 px-2.5 rounded-xl bg-[#F3B64B]/15 hover:bg-[#F3B64B]/25 text-[#F3B64B] border border-[#F3B64B]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    title="Verify on TronGrid and record verifiedPayments receipt without crediting wallet"
+                                  >
+                                    <ShieldCheck className={`w-3.5 h-3.5 ${isRecordingProof ? 'animate-pulse' : ''}`} />
+                                    <span>{isRecordingProof ? 'Recording...' : 'Verify Proof Only'}</span>
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                onClick={() => handleRejectDeposit(deposit.userId, deposit.id)}
+                                disabled={actionInProgressId === deposit.id}
+                                className="py-1.5 px-3 rounded-xl bg-[#080B12] hover:bg-[#FF4D4D]/20 text-[#FF4D4D] border border-[#FF4D4D]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                                <span>Reject</span>
+                              </button>
+                              <button
+                                onClick={() => handleApproveDeposit(deposit.userId, deposit.id)}
+                                disabled={actionInProgressId === deposit.id || isTestnetCreditBlocked}
+                                title={
+                                  isTestnetCreditBlocked
+                                    ? 'Testnet wallet credit is blocked to protect shared Firestore user balances. Use Dry-Run Check or Verify Proof Only.'
+                                    : 'Settle verified deposit and credit wallet balance'
+                                }
+                                className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-40 flex items-center gap-1.5"
+                              >
+                                {actionInProgressId === deposit.id ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Crediting...</span>
+                                  </>
+                                ) : isTestnetCreditBlocked ? (
+                                  <>
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                    <span>Testnet Credit Blocked</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 stroke-[3px]" />
+                                    <span>Approve &amp; Credit Balance</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          {preview && (
+                            <div className="p-2.5 rounded-xl bg-[#080B12] border border-[#253144] text-[10px] font-mono text-[#98A6BA] space-y-1">
+                              <div className="flex items-center justify-between flex-wrap gap-1">
+                                <span className="font-bold text-[#00D6A3]">
+                                  {preview.dryRun
+                                    ? '✓ DRY-RUN ON-CHAIN CHECK PASSED (NO DB WRITES)'
+                                    : '✓ VERIFIED PAYMENT PROOF RECORDED (NO WALLET CREDIT)'}
+                                </span>
+                                <span>
+                                  Block #{preview.receipt.blockNumber} • {preview.receipt.confirmations} Confirmations •{' '}
+                                  {preview.receipt.solidified ? 'Solidified' : 'Unconfirmed'}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                                <span>
+                                  Contract: <strong className="text-[#F4F7FC]">{preview.receipt.contractAddress}</strong>
+                                </span>
+                                <span>
+                                  Base Units (6 dec):{' '}
+                                  <strong className="text-[#25B9F3]">{preview.receipt.rawAmountBaseUnits}</strong>
+                                </span>
+                                <span>
+                                  From: <strong className="text-[#F4F7FC]">{preview.receipt.senderAddress}</strong>
+                                </span>
+                                <span>
+                                  To: <strong className="text-[#00D6A3]">{preview.receipt.recipientAddress}</strong>
+                                </span>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               )}

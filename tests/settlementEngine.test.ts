@@ -130,10 +130,24 @@ async function runTests() {
     asset: 'USDT',
     amount: 250,
     amountUSD: 250,
+    network: 'TRC20',
     txHash: '0x9876543210abcdef1234567890abcdef',
     status: 'PENDING_CONFIRMATION',
     walletCredited: false,
     walletSettled: false,
+  });
+  db.seed('verifiedPayments/txhash_0x9876543210abcdef1234567890abcdef', {
+    verified: true,
+    provider: 'TRONGRID_INDEXER',
+    txHash: '0x9876543210abcdef1234567890abcdef',
+    network: 'TRC20',
+    recipientAddress: 'TNexoraCustodialTreasuryVault99999',
+    recipientVerified: true,
+    asset: 'USDT',
+    amount: 250,
+    txStatus: 'SUCCESS',
+    confirmations: 20,
+    requiredConfirmations: 19,
   });
 
   // Execute two concurrent deposit approvals for the exact same deposit
@@ -583,10 +597,24 @@ async function runTests() {
     asset: 'USDT',
     amount: 48.5,
     amountUSD: 48.5,
+    network: 'TRC20',
     txHash: '0xconsoleverifiedtxhash9876543210',
     status: 'COMPLETED', // manually set in Console
     walletCredited: false,
     walletSettled: false,
+  });
+  db.seed('verifiedPayments/txhash_0xconsoleverifiedtxhash9876543210', {
+    verified: true,
+    provider: 'TRONGRID_INDEXER',
+    txHash: '0xconsoleverifiedtxhash9876543210',
+    network: 'TRC20',
+    recipientAddress: 'TNexoraCustodialTreasuryVault99999',
+    recipientVerified: true,
+    asset: 'USDT',
+    amount: 48.5,
+    txStatus: 'SUCCESS',
+    confirmations: 25,
+    requiredConfirmations: 19,
   });
 
   // Standard approval endpoint (allowManualCompletedStatus: false) MUST NOT treat an unsettled COMPLETED status as valid pending state
@@ -791,10 +819,24 @@ async function runTests() {
       asset: 'USDT',
       amount: 50,
       amountUSD: 50,
+      network: 'TRC20',
       txHash: '0xadminhttpverifieddeposit999999',
       status: 'PENDING_CONFIRMATION',
       walletCredited: false,
       walletSettled: false,
+    });
+    db.seed('verifiedPayments/txhash_0xadminhttpverifieddeposit999999', {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: '0xadminhttpverifieddeposit999999',
+      network: 'TRC20',
+      recipientAddress: 'TNexoraCustodialTreasuryVault99999',
+      recipientVerified: true,
+      asset: 'USDT',
+      amount: 50,
+      txStatus: 'SUCCESS',
+      confirmations: 30,
+      requiredConfirmations: 19,
     });
 
     const adminSetupRes = await fetch(`${baseUrl}/api/admin/setup-status`, {
@@ -1280,7 +1322,7 @@ async function runTests() {
     );
 
     // ---------------------------------------------------------------------------
-    // Test 14: Authorized Reconciliation of Unsettled CONFIRMED & APPROVED Deposits vs. Ordinary Rejection
+    // Test 14: Plausible Unverified txHash + Status Changes Rejected vs. Independent Payment Verification
     // ---------------------------------------------------------------------------
     const confirmedUser = 'user_confirmed_reconcile';
     db.seed(`users/${confirmedUser}/wallet/USDT`, {
@@ -1298,6 +1340,7 @@ async function runTests() {
       asset: 'USDT',
       amount: 75.25,
       amountUSD: 75.25,
+      network: 'ERC20',
       txHash: '0x777788889999aaaabbbbccccddddeeeeffff0001',
       status: 'CONFIRMED',
       walletCredited: false,
@@ -1318,7 +1361,41 @@ async function runTests() {
     );
     assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 50, 'Balance must not change on rejected ordinary call');
 
-    // 14b. Authorized reconciliation (allowManualCompletedStatus: true) credits exactly once, even under concurrent calls
+    // 14b. CRITICAL CHECK 2, 3 & 7: Even with allowManualCompletedStatus: true AND a plausible 42-char hex txHash,
+    // CONFIRMED status CANNOT credit the wallet when no independent verifiedPayments receipt exists!
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: confirmedUser,
+          txId: 'TX-CONFIRMED-001',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /Unverified deposit payment/i,
+      'allowManualCompletedStatus: true must still reject a plausible txHash when independent payment verification is missing'
+    );
+    assert.equal(
+      db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance,
+      50,
+      'Plausible unverified txHash + CONFIRMED status must never credit the wallet'
+    );
+
+    // 14c. Once an independent payment verification receipt (verifying network, recipient, asset, amount, txStatus, confirmations) is recorded,
+    // authorized reconciliation credits the wallet once and only once
+    db.seed('verifiedPayments/txhash_0x777788889999aaaabbbbccccddddeeeeffff0001', {
+      verified: true,
+      provider: 'ETH_RPC_INDEXER',
+      txHash: '0x777788889999aaaabbbbccccddddeeeeffff0001',
+      network: 'ERC20',
+      recipientAddress: '0xNexoraEthereumCustodialTreasury0001',
+      recipientVerified: true,
+      asset: 'USDT',
+      amount: 75.25,
+      txStatus: 'SUCCESS',
+      confirmations: 15,
+      requiredConfirmations: 12,
+    });
+
     const [confRes1, confRes2] = await Promise.all([
       settleDepositApproval(db, {
         userId: confirmedUser,
@@ -1333,7 +1410,7 @@ async function runTests() {
         allowManualCompletedStatus: true,
       }),
     ]);
-    assert.equal(confRes1.alreadyProcessed, false, 'First authorized reconciliation of CONFIRMED deposit must succeed');
+    assert.equal(confRes1.alreadyProcessed, false, 'First authorized reconciliation of verified CONFIRMED deposit must succeed');
     assert.equal(confRes2.alreadyProcessed, true, 'Concurrent reconciliation of CONFIRMED deposit must be idempotent');
     assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 125.25, 'Balance must increase from 50 to 125.25');
     assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.lockedBalance, 10, 'lockedBalance must remain untouched at 10');
@@ -1345,7 +1422,7 @@ async function runTests() {
       'Global paymentReference document must be recorded'
     );
     console.log(
-      '✓ Test 14 Passed: Unsettled CONFIRMED deposit rejected on ordinary call and atomically credited once via authorized reconciliation'
+      '✓ Test 14 Passed: Plausible unverified txHash + CONFIRMED status rejected even with allowManualCompletedStatus: true; credits only after independent payment verification'
     );
 
     // ---------------------------------------------------------------------------
@@ -1357,8 +1434,8 @@ async function runTests() {
       userId: confirmedUser,
       type: 'DEPOSIT',
       asset: 'USDT',
-      amount: 100,
-      amountUSD: 100,
+      amount: 75.25,
+      amountUSD: 75.25,
       txHash: '  0X777788889999AAAABBBBCCCCDDDDEEEEFFFF0001  ', // case + whitespace variation of already-settled hash
       status: 'PENDING_CONFIRMATION',
       walletCredited: false,
@@ -1393,8 +1470,8 @@ async function runTests() {
       userId: secondUser,
       type: 'DEPOSIT',
       asset: 'USDT',
-      amount: 500,
-      amountUSD: 500,
+      amount: 75.25,
+      amountUSD: 75.25,
       txHash: '0x777788889999aaaabbbbccccddddeeeeffff0001',
       status: 'CONFIRMED',
       walletCredited: false,
@@ -1419,7 +1496,7 @@ async function runTests() {
     );
 
     // ---------------------------------------------------------------------------
-    // Test 16: Exhaustive Boundary & Invalid Input Rejections (Amounts, Assets, References, Types, Ownership, Rejected Status)
+    // Test 16: Exhaustive Boundary, On-Chain Receipt Mismatch & Invalid Input Rejections
     // ---------------------------------------------------------------------------
     // 16a. Zero or negative amount
     db.seed(`users/${confirmedUser}/transactions/TX-BAD-ZERO`, {
@@ -1529,9 +1606,45 @@ async function runTests() {
       /rejection\/failure markers/i
     );
 
+    // 16h. On-chain receipt mismatch checks (wrong amount, wrong recipient, insufficient confirmations)
+    db.seed(`users/${confirmedUser}/transactions/TX-WRONG-ONCHAIN-AMOUNT`, {
+      id: 'TX-WRONG-ONCHAIN-AMOUNT',
+      userId: confirmedUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 500, // User claims 500 USDT
+      network: 'TRC20',
+      txHash: '0x555566667777888899990000aaaabbbb',
+      status: 'CONFIRMED',
+    });
+    db.seed('verifiedPayments/txhash_0x555566667777888899990000aaaabbbb', {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: '0x555566667777888899990000aaaabbbb',
+      network: 'TRC20',
+      recipientAddress: 'TNexoraCustodialTreasuryVault99999',
+      recipientVerified: true,
+      asset: 'USDT',
+      amount: 10, // On-chain transfer was only 10 USDT!
+      txStatus: 'SUCCESS',
+      confirmations: 20,
+      requiredConfirmations: 19,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: confirmedUser,
+          txId: 'TX-WRONG-ONCHAIN-AMOUNT',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /verified amount .* does not match claimed deposit amount/i,
+      'Underpaid on-chain transfer must be rejected'
+    );
+
     assert.equal(db.peek(`users/${confirmedUser}/wallet/USDT`)?.balance, 125.25, 'All invalid deposit attempts must leave balance untouched');
     console.log(
-      '✓ Test 16 Passed: Zero/negative, below-min, unsupported asset, malformed/placeholder hash, non-deposit, userId mismatch, and rejected deposits all fail closed'
+      '✓ Test 16 Passed: Zero/negative, below-min, unsupported asset, malformed/placeholder hash, non-deposit, userId mismatch, rejected status, and underpaid on-chain receipts all fail closed'
     );
 
     // ---------------------------------------------------------------------------
@@ -1544,10 +1657,24 @@ async function runTests() {
       asset: 'BTC',
       amount: 0.01,
       amountUSD: 942.5,
+      network: 'BTC',
       txHash: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
       status: 'APPROVED',
       walletCredited: false,
       walletSettled: false,
+    });
+    db.seed('verifiedPayments/txhash_bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', {
+      verified: true,
+      provider: 'BTC_CORE_RPC',
+      txHash: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+      network: 'BTC',
+      recipientAddress: 'bc1qnexoracustodialtreasuryvault0001',
+      recipientVerified: true,
+      asset: 'BTC',
+      amount: 0.01,
+      txStatus: 'SUCCESS',
+      confirmations: 6,
+      requiredConfirmations: 3,
     });
 
     const btcRes = await settleDepositApproval(db, {
@@ -1571,9 +1698,9 @@ async function runTests() {
     );
 
     // ---------------------------------------------------------------------------
-    // Test 18: Server /api/admin/pending-requests & /api/admin/reconcile-settlements Auto-Reconcile vs. Unverified CONFIRMED Handling
+    // Test 18: Read-Only GET Admin Endpoints (Zero Financial Writes) & POST Reconciliation Verification
     // ---------------------------------------------------------------------------
-    // Seed one valid unsettled CONFIRMED deposit and one unverified CONFIRMED deposit (missing valid txHash)
+    // Seed one verified CONFIRMED deposit and one plausible-but-unverified CONFIRMED deposit
     db.seed(`users/${userId}/transactions/TX-SERVER-CONFIRMED-VALID`, {
       id: 'TX-SERVER-CONFIRMED-VALID',
       userId,
@@ -1581,11 +1708,26 @@ async function runTests() {
       asset: 'USDT',
       amount: 48,
       amountUSD: 48,
+      network: 'TRC20',
       txHash: '0xserverautoconfirmedvalid9988776655',
       status: 'CONFIRMED',
       walletCredited: false,
       walletSettled: false,
     });
+    db.seed('verifiedPayments/txhash_0xserverautoconfirmedvalid9988776655', {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: '0xserverautoconfirmedvalid9988776655',
+      network: 'TRC20',
+      recipientAddress: 'TNexoraCustodialTreasuryVault99999',
+      recipientVerified: true,
+      asset: 'USDT',
+      amount: 48,
+      txStatus: 'SUCCESS',
+      confirmations: 22,
+      requiredConfirmations: 19,
+    });
+
     db.seed(`users/${userId}/transactions/TX-SERVER-CONFIRMED-UNVERIFIED`, {
       id: 'TX-SERVER-CONFIRMED-UNVERIFIED',
       userId,
@@ -1593,7 +1735,8 @@ async function runTests() {
       asset: 'USDT',
       amount: 250,
       amountUSD: 250,
-      txHash: 'internal', // unverified placeholder hash
+      network: 'TRC20',
+      txHash: '0xdeadbeef1234567890abcdef1234567890abcdef', // plausible hex string, but NO verifiedPayments receipt!
       status: 'CONFIRMED',
       walletCredited: false,
       walletSettled: false,
@@ -1650,39 +1793,947 @@ async function runTests() {
     }));
 
     const preBalance = db.peek(`users/${userId}/wallet/USDT`)?.balance || 0;
-    const autoReconcileQueueRes = await fetch(`${baseUrl}/api/admin/pending-requests`, {
+
+    // 18a. CRITICAL CHECK 8: GET /api/admin/pending-requests and GET /api/admin/pending-deposits MUST NOT perform any financial writes!
+    const getPendingRes = await fetch(`${baseUrl}/api/admin/pending-requests`, {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-admin-token' },
     });
-    assert.equal(autoReconcileQueueRes.status, 200);
-    const autoReconcileQueueBody = await autoReconcileQueueRes.json();
+    assert.equal(getPendingRes.status, 200);
+    assert.equal(
+      db.peek(`users/${userId}/wallet/USDT`)?.balance,
+      preBalance,
+      'GET /api/admin/pending-requests must NEVER modify wallet balances'
+    );
+    assert.equal(
+      db.peek(`users/${userId}/transactions/TX-SERVER-CONFIRMED-VALID`)?.walletCredited,
+      false,
+      'GET /api/admin/pending-requests must NEVER mark deposits as walletCredited'
+    );
 
-    // Valid CONFIRMED deposit was auto-reconciled and credited (+48 USDT)
-    assert.equal(autoReconcileQueueBody.autoReconciled.length, 1);
-    assert.equal(autoReconcileQueueBody.autoReconciled[0].txId, 'TX-SERVER-CONFIRMED-VALID');
+    // 18b. Explicit POST /api/admin/reconcile-settlements settles ONLY the deposit with verified payment proof
+    // and rejects/skips the deposit with a plausible but unverified txHash!
+    const postReconcileRes = await fetch(`${baseUrl}/api/admin/reconcile-settlements`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({ targetUserId: userId }),
+    });
+    assert.equal(postReconcileRes.status, 200);
+    const postReconcileBody = await postReconcileRes.json();
+
+    assert.equal(postReconcileBody.reconciledCount, 1, 'Only the deposit with independent payment proof may settle');
+    assert.equal(postReconcileBody.settledItems[0].txId, 'TX-SERVER-CONFIRMED-VALID');
     assert.equal(
       db.peek(`users/${userId}/wallet/USDT`)?.balance,
       preBalance + 48,
-      'Valid CONFIRMED deposit must auto-credit +48 USDT once'
+      'Verified CONFIRMED deposit credits +48 USDT once via POST /api/admin/reconcile-settlements'
     );
     assert.equal(db.peek(`users/${userId}/transactions/TX-SERVER-CONFIRMED-VALID`)?.walletCredited, true);
 
-    // Unverified CONFIRMED deposit was NOT credited and remains surfaced in deposits with settlementWarning
-    const unverifiedInQueue = autoReconcileQueueBody.deposits.find(
-      (d: any) => d.id === 'TX-SERVER-CONFIRMED-UNVERIFIED'
+    // Plausible but unverified CONFIRMED deposit was skipped and NEVER credited
+    assert.equal(
+      db.peek(`users/${userId}/transactions/TX-SERVER-CONFIRMED-UNVERIFIED`)?.walletCredited,
+      false,
+      'Plausible but unverified CONFIRMED deposit must remain walletCredited: false'
     );
-    assert.ok(unverifiedInQueue, 'Unverified CONFIRMED deposit must remain surfaced in admin queue');
-    assert.equal(unverifiedInQueue.walletCredited, false);
-    assert.match(String(unverifiedInQueue.settlementWarning), /missing a valid blockchain transaction hash/i);
+    const skippedUnverified = postReconcileBody.skippedItems.find(
+      (s: any) => s.txId === 'TX-SERVER-CONFIRMED-UNVERIFIED'
+    );
+    assert.ok(skippedUnverified, 'Plausible unverified CONFIRMED deposit must be reported in skippedItems');
+    assert.match(String(skippedUnverified.reason), /Unverified deposit payment/i);
     console.log(
-      '✓ Test 18 Passed: Admin queue auto-reconciles valid CONFIRMED deposits once while blocking unverified CONFIRMED deposits with warning'
+      '✓ Test 18 Passed: GET admin endpoints perform zero financial writes, and POST reconciliation settles only provider-verified deposits while blocking plausible unverified hashes'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 19: Phase 5 USDT TRC20 TronGrid Testnet Verifier & Atomic Settlement Suite
+    // ---------------------------------------------------------------------------
+    const {
+      AUTHORITATIVE_TRON_NETWORKS,
+      TRC20_TRANSFER_EVENT_TOPIC0,
+      assertAuthoritativeTronContractsIntegrity,
+      normalizeTronAddress,
+      tronHexToBase58,
+      tronBase58ToHex41,
+      usdtAmountToBaseUnitsBigInt,
+      baseUnitsBigIntToUsdt,
+      resolveTronVerifierConfig,
+      setTronGridFetchForTesting,
+      verifyAndRecordTrc20Deposit,
+    } = await import('../src/services/tronGridVerifier.ts');
+
+    // 19.0 Verify Base58Check <-> Hex41 round-trip, pinned Nile contract hex41, & 6-decimal base-unit BigInt conversion
+    assertAuthoritativeTronContractsIntegrity();
+    const nileUsdtBase58 = AUTHORITATIVE_TRON_NETWORKS.nile.officialUsdtContractBase58;
+    const nileUsdtHex41 = tronBase58ToHex41(nileUsdtBase58);
+    assert.equal(
+      nileUsdtBase58,
+      'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf',
+      'Pinned Nile USDT Base58 contract must be TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf'
+    );
+    assert.equal(
+      nileUsdtHex41,
+      '41eca9bc828a3005b9a3b909f2cc5c2a54794de05f',
+      'Direct Base58Check-to-Hex41 conversion of TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf must equal 41eca9bc828a3005b9a3b909f2cc5c2a54794de05f'
+    );
+    assert.equal(
+      AUTHORITATIVE_TRON_NETWORKS.nile.officialUsdtContractHex41,
+      nileUsdtHex41,
+      'Pinned Nile officialUsdtContractHex41 must match recomputed Hex41'
+    );
+    assert.equal(tronHexToBase58(nileUsdtHex41), nileUsdtBase58, 'TRON Base58Check <-> Hex41 must round-trip');
+
+    const senderWallet = normalizeTronAddress('411111111111111111111111111111111111111111');
+    const platformUserDepositAddr = normalizeTronAddress('412222222222222222222222222222222222222222');
+    const wrongRecipientAddr = normalizeTronAddress('413333333333333333333333333333333333333333');
+    const fakeContractAddr = normalizeTronAddress('414444444444444444444444444444444444444444');
+
+    assert.equal(
+      usdtAmountToBaseUnitsBigInt(125.123456),
+      125123456n,
+      '6-decimal USDT must convert to exact integer token base units BigInt'
+    );
+    assert.equal(
+      baseUnitsBigIntToUsdt(125123456n).amount,
+      125.123456,
+      '6-decimal token base units BigInt must convert back to exact 6-decimal USDT number'
+    );
+    assert.throws(
+      () => usdtAmountToBaseUnitsBigInt(10.1234567),
+      /exceeds maximum 6-decimal token precision/i,
+      'More than 6 decimal places must be rejected for USDT TRC20'
+    );
+    assert.throws(
+      () => resolveTronVerifierConfig({ tronNetwork: 'mainnet', allowMainnetInCurrentEnv: false }),
+      /TRON Mainnet verification is disabled in Phase 5 testnet validation mode/i,
+      'Mainnet must be blocked by default in Phase 5 testnet mode'
+    );
+
+    // Helper to build deterministic TronGrid mock responses
+    const buildMockTronGridFetch = (opts: {
+      txIdHex: string;
+      found?: boolean;
+      contractRet?: string;
+      receiptResult?: string;
+      contractHex41?: string;
+      senderHex41?: string;
+      recipientHex41?: string;
+      amountBaseUnits?: bigint;
+      txBlockNumber?: number;
+      latestBlockNumber?: number;
+      solidifiedBlockNumber?: number;
+      unconfirmedFlag?: boolean;
+      httpStatus?: number;
+      simulateTimeout?: boolean;
+      malformedJson?: boolean;
+    }) => {
+      const {
+        txIdHex,
+        found = true,
+        contractRet = 'SUCCESS',
+        receiptResult = 'SUCCESS',
+        contractHex41 = nileUsdtHex41,
+        senderHex41 = senderWallet.hex41,
+        recipientHex41 = platformUserDepositAddr.hex41,
+        amountBaseUnits = 125123456n,
+        txBlockNumber = 50000,
+        latestBlockNumber = 50025, // 26 confirmations (>= 19)
+        solidifiedBlockNumber = 50020,
+        unconfirmedFlag = false,
+        httpStatus = 200,
+        simulateTimeout = false,
+        malformedJson = false,
+      } = opts;
+
+      return async (url: string) => {
+        if (simulateTimeout) {
+          const abortErr: any = new Error('The operation was aborted due to timeout');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
+        if (httpStatus !== 200) {
+          return {
+            ok: false,
+            status: httpStatus,
+            json: async () => ({ error: `HTTP ${httpStatus}` }),
+          };
+        }
+        if (malformedJson) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => null,
+          };
+        }
+
+        if (url.endsWith('/wallet/gettransactionbyid')) {
+          if (!found) {
+            return { ok: true, status: 200, json: async () => ({}) };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              txID: txIdHex,
+              ret: [{ contractRet }],
+              raw_data: {
+                contract: [
+                  {
+                    type: 'TriggerSmartContract',
+                    parameter: {
+                      value: {
+                        owner_address: senderHex41,
+                        contract_address: contractHex41,
+                      },
+                    },
+                  },
+                ],
+              },
+            }),
+          };
+        }
+
+        if (url.endsWith('/wallet/gettransactioninfobyid')) {
+          if (!found) {
+            return { ok: true, status: 200, json: async () => ({}) };
+          }
+          const senderTopic = senderHex41.slice(2).padStart(64, '0');
+          const recipientTopic = recipientHex41.slice(2).padStart(64, '0');
+          const dataWord = amountBaseUnits.toString(16).padStart(64, '0');
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: txIdHex,
+              blockNumber: txBlockNumber,
+              blockTimeStamp: 1761720000000,
+              receipt: {
+                result: receiptResult,
+              },
+              log: [
+                {
+                  address: contractHex41.slice(2),
+                  topics: [TRC20_TRANSFER_EVENT_TOPIC0, senderTopic, recipientTopic],
+                  data: dataWord,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (url.includes('/v1/transactions/') && url.endsWith('/events')) {
+          if (!found) {
+            return { ok: true, status: 200, json: async () => ({ data: [], success: true }) };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              success: true,
+              data: [
+                {
+                  transaction_id: txIdHex,
+                  contract_address: tronHexToBase58(contractHex41),
+                  block_number: txBlockNumber,
+                  block_timestamp: 1761720000000,
+                  event_name: 'Transfer',
+                  _unconfirmed: unconfirmedFlag,
+                  result: {
+                    from: `0x${senderHex41.slice(2)}`,
+                    to: `0x${recipientHex41.slice(2)}`,
+                    value: amountBaseUnits.toString(),
+                  },
+                },
+              ],
+            }),
+          };
+        }
+
+        if (url.endsWith('/wallet/getnowblock')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              block_header: { raw_data: { number: latestBlockNumber } },
+            }),
+          };
+        }
+
+        if (url.endsWith('/walletsolidity/getnowblock')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              block_header: { raw_data: { number: solidifiedBlockNumber } },
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected TronGrid URL in test: ${url}`);
+      };
+    };
+
+    const trc20UserA = 'user_trc20_nile_a';
+    const trc20UserB = 'user_trc20_nile_b';
+    const validNileTxHash = 'a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff';
+
+    // Seed User A and User B profiles, wallets, and dedicated deposit address attribution for User A
+    db.seed(`users/${trc20UserA}`, {
+      id: trc20UserA,
+      email: 'nile_miner_a@example.com',
+      trc20DepositAddress: platformUserDepositAddr.base58,
+    });
+    db.seed(`depositAddresses/${platformUserDepositAddr.base58}`, {
+      address: platformUserDepositAddr.base58,
+      userId: trc20UserA,
+      tronNetwork: 'nile',
+      active: true,
+    });
+    db.seed(`users/${trc20UserA}/wallet/USDT`, {
+      symbol: 'USDT',
+      name: 'Tether USD',
+      balance: 100,
+      lockedBalance: 0,
+      priceUSD: 1,
+      change24h: 0,
+    });
+    db.seed(`users/${trc20UserB}/wallet/USDT`, {
+      symbol: 'USDT',
+      name: 'Tether USD',
+      balance: 25,
+      lockedBalance: 0,
+      priceUSD: 1,
+      change24h: 0,
+    });
+
+    db.seed(`users/${trc20UserA}/transactions/TX-NILE-VALID-01`, {
+      id: 'TX-NILE-VALID-01',
+      userId: trc20UserA,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 125.123456,
+      amountUSD: 125.12,
+      network: 'TRC20 (Tron)',
+      txHash: validNileTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    const baseTestConfig = {
+      tronNetwork: 'nile',
+      apiKey: 'test-trongrid-server-key-not-secret',
+      requireApiKey: true,
+      requiredConfirmations: 19,
+      requireSolidified: true,
+      maxRetries: 0,
+    };
+
+    // 19.1 Missing provider credentials (TRONGRID_API_KEY) -> fails closed
+    setTronGridFetchForTesting(buildMockTronGridFetch({ txIdHex: validNileTxHash }));
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: { ...baseTestConfig, apiKey: '', requireApiKey: true },
+        }),
+      /Missing TRONGRID_API_KEY server credential/i,
+      'Missing TRONGRID_API_KEY must fail closed'
+    );
+    assert.equal(db.peek(`users/${trc20UserA}/wallet/USDT`)?.balance, 100, 'Wallet balance must remain 100');
+
+    // 19.2 Missing transaction on-chain -> fails closed
+    setTronGridFetchForTesting(buildMockTronGridFetch({ txIdHex: validNileTxHash, found: false }));
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /not found on TRON_NILE_TESTNET/i,
+      'Missing transaction on-chain must fail closed'
+    );
+
+    // 19.3 Reverted transaction (receipt.result = 'REVERT' / 'OUT_OF_ENERGY') -> fails closed
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, receiptResult: 'OUT_OF_ENERGY' })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /did not execute successfully on-chain/i,
+      'Reverted or OUT_OF_ENERGY transaction must fail closed'
+    );
+
+    // 19.4 Wrong TRC20 contract (fake token contract) -> fails closed
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, contractHex41: fakeContractAddr.hex41 })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Wrong smart contract called|Wrong TRC20 token contract/i,
+      'Fake TRC20 contract must fail closed'
+    );
+
+    // 19.5 Wrong recipient address -> fails closed
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, recipientHex41: wrongRecipientAddr.hex41 })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Wrong TRC20 Transfer recipient/i,
+      'Transfer to wrong recipient address must fail closed'
+    );
+
+    // 19.6 Wrong amount in integer token base units (underpaid and overpaid) -> fails closed
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, amountBaseUnits: 50_000_000n }) // 50 USDT < 125.123456 USDT
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Underpaid TRC20 transfer.*50000000 base units.*125123456 base units/i,
+      'Underpaid TRC20 transfer must fail closed with exact base units message'
+    );
+
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, amountBaseUnits: 200_000_000n }) // 200 USDT > 125.123456 USDT
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Overpaid \/ mismatched TRC20 transfer amount.*200000000 base units.*125123456 base units/i,
+      'Overpaid / mismatched TRC20 transfer must fail closed with exact base units message'
+    );
+
+    // 19.7 Insufficient confirmations & unsolidified block -> fails closed
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({
+        txIdHex: validNileTxHash,
+        txBlockNumber: 50000,
+        latestBlockNumber: 50010, // 11 confirmations < 19 required
+        solidifiedBlockNumber: 50010,
+      })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Insufficient TRON block confirmations/i,
+      'Insufficient block confirmations must fail closed'
+    );
+
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({
+        txIdHex: validNileTxHash,
+        txBlockNumber: 50000,
+        latestBlockNumber: 50025,
+        solidifiedBlockNumber: 49995, // solidified block behind txBlockNumber
+      })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /not yet solidified/i,
+      'Unsolidified block must fail closed'
+    );
+
+    // 19.8 Provider timeout, HTTP 429 rate limit, and malformed response -> fail closed
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, simulateTimeout: true })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /timed out/i,
+      'Provider timeout must fail closed'
+    );
+
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, httpStatus: 429 })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /rate limit exceeded \(HTTP 429\)/i,
+      'Provider HTTP 429 rate limit must fail closed'
+    );
+
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({ txIdHex: validNileTxHash, malformedJson: true })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Malformed non-JSON response/i,
+      'Malformed provider JSON must fail closed'
+    );
+
+    // Confirm User A's deposit is STILL pending and wallet balance is STILL 100 after all failure modes
+    assert.equal(
+      db.peek(`users/${trc20UserA}/wallet/USDT`)?.balance,
+      100,
+      'All failed verification attempts must leave Available Balance untouched at 100 USDT'
+    );
+    assert.equal(
+      db.peek(`users/${trc20UserA}/transactions/TX-NILE-VALID-01`)?.walletCredited,
+      false
+    );
+
+    // 19.9 Unattributed shared treasury deposit (User B has no dedicated depositAddresses entry or depositAttributions record) -> fails closed
+    db.seed(`users/${trc20UserB}/transactions/TX-NILE-UNATTRIBUTED`, {
+      id: 'TX-NILE-UNATTRIBUTED',
+      userId: trc20UserB,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 125.123456,
+      amountUSD: 125.12,
+      network: 'TRC20',
+      txHash: 'b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff11',
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    setTronGridFetchForTesting(
+      buildMockTronGridFetch({
+        txIdHex: 'b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff11',
+      })
+    );
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserB,
+          txId: 'TX-NILE-UNATTRIBUTED',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Missing verified deposit address attribution/i,
+      'Transfer without server-verified deposit address attribution must fail closed'
+    );
+    assert.equal(db.peek(`users/${trc20UserB}/wallet/USDT`)?.balance, 25);
+
+    // 19.9b Read-only dryRun: true mode validates on-chain data without writing verifiedPayments or crediting wallet
+    setTronGridFetchForTesting(buildMockTronGridFetch({ txIdHex: validNileTxHash }));
+    const dryRunRes = await verifyAndRecordTrc20Deposit(db, {
+      userId: trc20UserA,
+      txId: 'TX-NILE-VALID-01',
+      admin: adminActor,
+      dryRun: true,
+      autoSettle: false,
+      configOverrides: baseTestConfig,
+    });
+    assert.equal(dryRunRes.verified, true, 'Dry-run must return verified: true for valid Nile transaction');
+    assert.equal(dryRunRes.dryRun, true, 'Dry-run must set dryRun: true');
+    assert.equal(dryRunRes.alreadyVerified, false);
+    assert.equal(dryRunRes.receipt.rawAmountBaseUnits, '125123456');
+    assert.equal(dryRunRes.receipt.contractAddressHex41, '41eca9bc828a3005b9a3b909f2cc5c2a54794de05f');
+    assert.equal(
+      db.peek(`verifiedPayments/txhash_${validNileTxHash}`),
+      undefined,
+      'Dry-run mode must NOT write verifiedPayments/{paymentRefKey} to Firestore'
+    );
+    assert.equal(
+      db.peek(`users/${trc20UserA}/wallet/USDT`)?.balance,
+      100,
+      'Dry-run mode must leave user wallet balance unchanged at 100 USDT'
+    );
+    assert.equal(
+      db.peek(`users/${trc20UserA}/transactions/TX-NILE-VALID-01`)?.walletCredited,
+      false,
+      'Dry-run mode must leave deposit walletCredited=false'
+    );
+    assert.equal(
+      db.peek(`users/${trc20UserA}/transactions/TX-NILE-VALID-01`)?.settlementStatus,
+      undefined,
+      'Dry-run mode must perform zero updates to the deposit transaction document'
+    );
+
+    // 19.9c Verify Proof Only (dryRun: false, autoSettle: false) writes verifiedPayments without crediting wallet,
+    // AND live testnet settlement is blocked unless allowTestnetCreditForTesting is explicitly passed
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          dryRun: false,
+          autoSettle: true,
+          configOverrides: baseTestConfig,
+        }),
+      /Refusing to credit wallet balance from a testnet/i,
+      'Live testnet autoSettle must be blocked to protect shared Firestore user wallet balances'
+    );
+
+    const proofOnlyRes = await verifyAndRecordTrc20Deposit(db, {
+      userId: trc20UserA,
+      txId: 'TX-NILE-VALID-01',
+      admin: adminActor,
+      dryRun: false,
+      autoSettle: false,
+      configOverrides: baseTestConfig,
+    });
+    assert.equal(proofOnlyRes.verified, true);
+    assert.equal(proofOnlyRes.dryRun, false);
+    assert.equal(
+      db.peek(`users/${trc20UserA}/wallet/USDT`)?.balance,
+      100,
+      'Verify Proof Only mode must NOT change user wallet balance (remains 100 USDT)'
+    );
+    assert.ok(
+      db.peek(`verifiedPayments/txhash_${validNileTxHash}`),
+      'Verify Proof Only mode must write verifiedPayments/txhash_<normalized>'
+    );
+
+    // Attempting settleDepositApproval on a Nile testnet receipt without allowTestnetCreditForTesting must also fail closed
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: trc20UserA,
+          txId: 'TX-NILE-VALID-01',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+        }),
+      /Refusing to credit live Firestore wallet balance from a testnet payment receipt/i,
+      'settleDepositApproval must block Nile testnet receipts from crediting live Firestore wallets by default'
+    );
+    assert.equal(
+      db.peek(`users/${trc20UserA}/wallet/USDT`)?.balance,
+      100,
+      'Wallet balance must still remain 100 USDT after blocked testnet settlement attempt'
+    );
+
+    // 19.10 Isolated unit-test settlement (allowTestnetCreditForTesting: true) + concurrent idempotency
+    setTronGridFetchForTesting(buildMockTronGridFetch({ txIdHex: validNileTxHash }));
+    const [verifyRes1, verifyRes2] = await Promise.all([
+      verifyAndRecordTrc20Deposit(db, {
+        userId: trc20UserA,
+        txId: 'TX-NILE-VALID-01',
+        admin: adminActor,
+        autoSettle: true,
+        allowTestnetCreditForTesting: true,
+        configOverrides: baseTestConfig,
+      }),
+      verifyAndRecordTrc20Deposit(db, {
+        userId: trc20UserA,
+        txId: 'TX-NILE-VALID-01',
+        admin: adminActor,
+        autoSettle: true,
+        allowTestnetCreditForTesting: true,
+        configOverrides: baseTestConfig,
+      }),
+    ]);
+
+    assert.equal(verifyRes1.verified, true);
+    assert.equal(verifyRes2.verified, true);
+    assert.equal(
+      db.peek(`users/${trc20UserA}/wallet/USDT`)?.balance,
+      225.123456,
+      'Isolated unit-test settlement must credit +125.123456 USDT exactly once (100 -> 225.123456)'
+    );
+    const savedProof = db.peek(`verifiedPayments/txhash_${validNileTxHash}`);
+    assert.ok(savedProof, 'verifiedPayments receipt must be written by verifier');
+    assert.equal(savedProof?.userId, trc20UserA);
+    assert.equal(savedProof?.txId, 'TX-NILE-VALID-01');
+    assert.equal(savedProof?.contractAddress, nileUsdtBase58);
+    assert.equal(savedProof?.contractAddressHex41, '41eca9bc828a3005b9a3b909f2cc5c2a54794de05f');
+    assert.equal(savedProof?.senderAddress, senderWallet.base58);
+    assert.equal(savedProof?.recipientAddress, platformUserDepositAddr.base58);
+    assert.equal(savedProof?.amount, 125.123456);
+    assert.equal(savedProof?.rawAmountBaseUnits, '125123456');
+    assert.equal(savedProof?.confirmations, 26);
+    assert.equal(savedProof?.solidified, true);
+
+    // 19.11 Duplicate transaction hash across two users (User B submits User A's verified txHash)
+    db.seed(`depositAttributions/TX-NILE-DUP-USER-B`, {
+      userId: trc20UserB,
+      txId: 'TX-NILE-DUP-USER-B',
+      tronNetwork: 'nile',
+      expectedRecipientAddress: platformUserDepositAddr.base58,
+      expectedTxHash: validNileTxHash,
+    });
+    db.seed(`users/${trc20UserB}/transactions/TX-NILE-DUP-USER-B`, {
+      id: 'TX-NILE-DUP-USER-B',
+      userId: trc20UserB,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 125.123456,
+      amountUSD: 125.12,
+      network: 'TRC20',
+      txHash: validNileTxHash,
+      status: 'CONFIRMED',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    await assert.rejects(
+      () =>
+        verifyAndRecordTrc20Deposit(db, {
+          userId: trc20UserB,
+          txId: 'TX-NILE-DUP-USER-B',
+          admin: adminActor,
+          autoSettle: false,
+          configOverrides: baseTestConfig,
+        }),
+      /Duplicate payment reference|Duplicate verified payment receipt/i,
+      'Duplicate txHash across two users must be rejected by verifier'
+    );
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: trc20UserB,
+          txId: 'TX-NILE-DUP-USER-B',
+          admin: adminActor,
+          allowManualCompletedStatus: true,
+          allowTestnetCreditForTesting: true,
+        }),
+      /Duplicate payment reference/i,
+      'Duplicate txHash across two users must also be rejected by settleDepositApproval'
+    );
+    assert.equal(db.peek(`users/${trc20UserB}/wallet/USDT`)?.balance, 25, 'User B balance must remain 25 USDT');
+
+    // 19.12 Verify firestore.rules explicitly denies client access to verifiedPayments, paymentReferences, depositAddresses, and depositAttributions
+    assert.match(
+      rulesSource,
+      /match \/verifiedPayments\/\{paymentRefId\}[\s\S]*?allow read, write: if false;/,
+      'firestore.rules must explicitly deny client reads/writes to verifiedPayments'
+    );
+    assert.match(
+      rulesSource,
+      /match \/paymentReferences\/\{paymentRefId\}[\s\S]*?allow read, write: if false;/,
+      'firestore.rules must explicitly deny client reads/writes to paymentReferences'
+    );
+    assert.match(
+      rulesSource,
+      /match \/depositAddresses\/\{addressId\}[\s\S]*?allow read, write: if false;/,
+      'firestore.rules must explicitly deny client reads/writes to depositAddresses'
+    );
+    assert.match(
+      rulesSource,
+      /match \/depositAttributions\/\{attributionId\}[\s\S]*?allow read, write: if false;/,
+      'firestore.rules must explicitly deny client reads/writes to depositAttributions'
+    );
+
+    // 19.13 Phase 5.4: Read-only Nile TRC20 contract & endpoint probe (verifyTronContractAndEndpointsReadOnly + GET /api/admin/tron-contract-check)
+    const { verifyTronContractAndEndpointsReadOnly } = await import('../src/services/tronGridVerifier.ts');
+    const buildMockContractProbeFetch = (overrides?: { decimalsHex?: string; bytecode?: string }) => {
+      const decimalsHex = overrides?.decimalsHex ?? '0000000000000000000000000000000000000000000000000000000000000006';
+      const bytecode = overrides?.bytecode ?? '6080604052'.repeat(3000);
+      // ABI-encoded string "USDT": offset 32 (0x20), length 4, "USDT" (55534454) padded to 32 bytes
+      const symbolHex =
+        '0000000000000000000000000000000000000000000000000000000000000020' +
+        '0000000000000000000000000000000000000000000000000000000000000004' +
+        '5553445400000000000000000000000000000000000000000000000000000000';
+      // ABI-encoded string "Tether USD": offset 32 (0x20), length 10 (0x0a), "Tether USD"
+      const nameHex =
+        '0000000000000000000000000000000000000000000000000000000000000020' +
+        '000000000000000000000000000000000000000000000000000000000000000a' +
+        '5465746865722055534400000000000000000000000000000000000000000000';
+
+      return async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/wallet/getcontract')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              contract_address: nileUsdtHex41,
+              name: 'TetherToken',
+              bytecode,
+              abi: {
+                entrys: [
+                  {
+                    type: 'Event',
+                    name: 'Transfer',
+                    inputs: [
+                      { indexed: true, name: 'from', type: 'address' },
+                      { indexed: true, name: 'to', type: 'address' },
+                      { indexed: false, name: 'value', type: 'uint256' },
+                    ],
+                  },
+                  {
+                    type: 'Function',
+                    name: 'decimals',
+                    outputs: [{ type: 'uint8' }],
+                  },
+                  {
+                    type: 'Function',
+                    name: 'symbol',
+                    outputs: [{ type: 'string' }],
+                  },
+                ],
+              },
+            }),
+          };
+        }
+        if (url.endsWith('/wallet/triggerconstantcontract')) {
+          const parsedBody = init?.body ? JSON.parse(String(init.body)) : {};
+          const fnSelector = String(parsedBody.function_selector || '');
+          const constantResult =
+            fnSelector === 'decimals()'
+              ? [decimalsHex]
+              : fnSelector === 'symbol()'
+              ? [symbolHex]
+              : [nameHex];
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              result: { result: true },
+              constant_result: constantResult,
+            }),
+          };
+        }
+        if (url.endsWith('/wallet/getnowblock')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              block_header: { raw_data: { number: 72247385 } },
+            }),
+          };
+        }
+        if (url.endsWith('/walletsolidity/getnowblock')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              block_header: { raw_data: { number: 72247366 } },
+            }),
+          };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
+    };
+
+    setTronGridFetchForTesting(buildMockContractProbeFetch() as any);
+    const probeRes = await verifyTronContractAndEndpointsReadOnly({
+      tronNetwork: 'nile',
+      allowUnauthenticatedProbe: true,
+    });
+    assert.equal(probeRes.verified, true, 'Nile contract and endpoint probe must verify true');
+    assert.equal(probeRes.contract.base58, 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf');
+    assert.equal(probeRes.contract.hex41, '41eca9bc828a3005b9a3b909f2cc5c2a54794de05f');
+    assert.equal(probeRes.contract.onChainDecimals, 6, 'Nile USDT contract must report 6 decimals');
+    assert.equal(probeRes.contract.onChainSymbol, 'USDT', 'Nile USDT contract must report symbol USDT');
+    assert.equal(probeRes.contract.onChainName, 'Tether USD', 'Nile USDT contract must report Tether USD');
+    assert.equal(probeRes.contract.hasTransferEventAbi, true);
+    assert.equal(probeRes.endpoints.latestBlockNumber, 72247385);
+    assert.equal(probeRes.endpoints.solidifiedBlockNumber, 72247366);
+    assert.equal(probeRes.endpoints.solidificationLagBlocks, 19);
+
+    // Wrong decimals on-chain must fail closed
+    setTronGridFetchForTesting(
+      buildMockContractProbeFetch({
+        decimalsHex: '0000000000000000000000000000000000000000000000000000000000000012', // 18 decimals
+      }) as any
+    );
+    await assert.rejects(
+      () => verifyTronContractAndEndpointsReadOnly({ tronNetwork: 'nile', allowUnauthenticatedProbe: true }),
+      /On-chain USDT decimals\(\) mismatch.*expected 6, got 18/i,
+      'Non-6-decimal token contract must be rejected by read-only contract probe'
+    );
+
+    // Verify GET /api/admin/tron-contract-check route returns 200 and performs zero Firestore writes
+    setTronGridFetchForTesting(buildMockContractProbeFetch() as any);
+    const adminProbeHttpRes = await fetch(`${baseUrl}/api/admin/tron-contract-check`, {
+      method: 'GET',
+      headers: {
+        Authorization: 'Bearer valid-admin-token',
+      },
+    });
+    assert.equal(adminProbeHttpRes.status, 200, 'GET /api/admin/tron-contract-check must return 200 for admin');
+    const adminProbeBody = await adminProbeHttpRes.json();
+    assert.equal(adminProbeBody.success, true);
+    assert.equal(adminProbeBody.verified, true);
+    assert.equal(adminProbeBody.readOnly, true);
+    assert.equal(adminProbeBody.contract?.base58, 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf');
+    assert.equal(adminProbeBody.contract?.onChainDecimals, 6);
+    assert.equal(
+      db.peek(`users/${trc20UserB}/wallet/USDT`)?.balance,
+      25,
+      'GET /api/admin/tron-contract-check must perform zero Firestore wallet writes'
+    );
+
+    setTronGridFetchForTesting(null);
+    console.log(
+      '✓ Test 19 Passed: Phase 5.4 USDT TRC20 TronGrid Testnet Verifier verified across Base58Check/Hex41 integrity, live Nile contract & endpoint probe, 6-decimal baseUnits, zero-write dryRun, proof-only, testnet credit block, and replay protection'
     );
   } finally {
     resetServerTestHooks();
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
   }
 
-  console.log('\nALL 18 SETTLEMENT, REPLAY-PROTECTION, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
+  console.log('\nALL 19 SETTLEMENT, TRC20 VERIFIER, REPLAY-PROTECTION, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
 }
 
 runTests().catch((err) => {

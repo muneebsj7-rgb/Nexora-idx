@@ -14,10 +14,80 @@ export interface PendingRequestsBundle {
   withdrawals: PendingRequestItem[];
 }
 
+export interface TronVerifierSetupInfo {
+  tronNetwork: string;
+  chainName: string;
+  officialUsdtContract: string;
+  officialUsdtContractHex41: string;
+  requiredConfirmations: number;
+  requireSolidified: boolean;
+  mainnetEnabled: boolean;
+  testnetCreditBlocked: boolean;
+  hasTronGridApiKey: boolean;
+}
+
 export interface AdminSetupStatus {
   isConfigured: boolean;
   functionsDeployed: boolean;
+  tronVerifier?: TronVerifierSetupInfo | null;
   notes: string[];
+}
+
+export interface Trc20VerificationResponse {
+  success: boolean;
+  verified: boolean;
+  dryRun: boolean;
+  alreadyVerified: boolean;
+  userId: string;
+  txId: string;
+  paymentRefDocId: string;
+  receipt: {
+    tronNetwork: string;
+    chainName: string;
+    txHash: string;
+    contractAddress: string;
+    contractAddressHex41: string;
+    senderAddress: string;
+    recipientAddress: string;
+    amount: number;
+    rawAmountBaseUnits: string;
+    blockNumber: number;
+    confirmations: number;
+    requiredConfirmations: number;
+    solidified: boolean;
+    verifiedAt: string;
+  };
+}
+
+export interface TronContractAndEndpointProbeResponse {
+  success: boolean;
+  verified: boolean;
+  readOnly: boolean;
+  tronNetwork: string;
+  chainName: string;
+  apiBaseUrl: string;
+  usedApiKeyHeader: boolean;
+  contract: {
+    base58: string;
+    hex41: string;
+    contractName: string;
+    bytecodeLengthHexChars: number;
+    hasTransferEventAbi: boolean;
+    transferEventSignature: string;
+    onChainSymbol: string;
+    onChainName: string;
+    onChainDecimals: number;
+  };
+  endpoints: {
+    getContractOk: boolean;
+    triggerConstantContractOk: boolean;
+    getNowBlockOk: boolean;
+    getSolidityNowBlockOk: boolean;
+    latestBlockNumber: number;
+    solidifiedBlockNumber: number;
+    solidificationLagBlocks: number;
+  };
+  checkedAt: string;
 }
 
 export const KNOWN_ADMIN_EMAILS = [
@@ -47,6 +117,58 @@ export class AdminService {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Runs a strictly read-only on-chain contract and endpoint check against the configured TRON network.
+   * Performs zero Firestore reads/writes and settles no deposits.
+   */
+  static async checkTronContractAndEndpoints(): Promise<TronContractAndEndpointProbeResponse> {
+    const headers = await getAdminAuthHeaders();
+    const response = await fetch('/api/admin/tron-contract-check', {
+      method: 'GET',
+      headers,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || data.message || `Contract check failed with HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  /**
+   * Runs server-side TRON USDT (TRC20) verification via TronGrid.
+   * - When `dryRun === true`: 100% read-only on-chain verification (zero Firestore writes, zero balance changes).
+   * - When `dryRun === false` and `autoSettle === false`: records `verifiedPayments/txhash_<normalized>` without crediting the wallet.
+   */
+  static async verifyTrc20Deposit(
+    userId: string,
+    txId: string,
+    options: { dryRun?: boolean; autoSettle?: boolean; note?: string } = {}
+  ): Promise<Trc20VerificationResponse> {
+    if (!userId || !txId) {
+      throw new Error('Both userId and txId are required to verify a TRC20 deposit.');
+    }
+
+    const headers = await getAdminAuthHeaders();
+    const response = await fetch('/api/admin/verify-trc20-deposit', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        userId,
+        txId,
+        dryRun: Boolean(options.dryRun),
+        autoSettle: options.dryRun ? false : Boolean(options.autoSettle),
+        note: options.note,
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || data.message || `TRC20 verification failed with HTTP ${response.status}`);
+    }
+
+    return data;
   }
 
   /**

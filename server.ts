@@ -19,6 +19,11 @@ import {
   settleWithdrawalRejection,
   purchaseMiningContract,
 } from './src/services/settlementEngine.ts';
+import {
+  resolveTronVerifierConfig,
+  verifyAndRecordTrc20Deposit,
+  verifyTronContractAndEndpointsReadOnly,
+} from './src/services/tronGridVerifier.ts';
 
 dotenv.config();
 
@@ -469,16 +474,72 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/admin/setup-status', requireAdminAuth, (_req, res) => {
+  let tronVerifierInfo: {
+    tronNetwork: string;
+    chainName: string;
+    officialUsdtContract: string;
+    officialUsdtContractHex41: string;
+    requiredConfirmations: number;
+    requireSolidified: boolean;
+    mainnetEnabled: boolean;
+    testnetCreditBlocked: boolean;
+    hasTronGridApiKey: boolean;
+  } | null = null;
+
+  try {
+    const cfg = resolveTronVerifierConfig();
+    tronVerifierInfo = {
+      tronNetwork: cfg.network.networkId,
+      chainName: cfg.network.chainName,
+      officialUsdtContract: cfg.network.officialUsdtContractBase58,
+      officialUsdtContractHex41: cfg.network.officialUsdtContractHex41,
+      requiredConfirmations: cfg.requiredConfirmations,
+      requireSolidified: cfg.requireSolidified,
+      mainnetEnabled: cfg.allowMainnetInCurrentEnv,
+      testnetCreditBlocked: cfg.network.isTestnet,
+      hasTronGridApiKey: Boolean(cfg.apiKey && cfg.apiKey.length > 0),
+    };
+  } catch {
+    // ignore if TRON_NETWORK is invalid in environment
+  }
+
   res.json({
     isConfigured: hasActiveFirestoreBackend(),
     functionsDeployed: false,
+    tronVerifier: tronVerifierInfo,
     notes: [
       hasActiveFirestoreBackend()
         ? 'Firebase Admin SDK is initialized for server-side settlement.'
         : 'Firebase Admin SDK is not initialized on this server instance.',
+      tronVerifierInfo
+        ? `TRON Verifier: ${tronVerifierInfo.chainName} | Official USDT: ${tronVerifierInfo.officialUsdtContract} (${tronVerifierInfo.officialUsdtContractHex41}) | Confirmations >= ${tronVerifierInfo.requiredConfirmations} | Mainnet Disabled: ${!tronVerifierInfo.mainnetEnabled} | Testnet Credit Blocked: ${tronVerifierInfo.testnetCreditBlocked}`
+        : 'TRON Verifier configuration notice: check TRON_NETWORK setting.',
       'Cloud Functions blueprint available at /functions/index.ts.',
     ],
   });
+});
+
+/**
+ * GET /api/admin/tron-contract-check
+ * Strictly read-only administrative endpoint: independently queries the configured
+ * TRON TronGrid endpoint (/wallet/getcontract, /wallet/triggerconstantcontract,
+ * /wallet/getnowblock, /walletsolidity/getnowblock) to verify that the pinned USDT
+ * contract exists on-chain, has deployed bytecode, exposes Transfer(address,address,uint256),
+ * and returns decimals() === 6 and symbol() === 'USDT'. Performs zero Firestore reads or writes.
+ */
+app.get('/api/admin/tron-contract-check', requireAdminAuth, async (_req, res) => {
+  try {
+    const result = await verifyTronContractAndEndpointsReadOnly();
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err?.message || 'Read-only TRON contract and endpoint verification failed.',
+    });
+  }
 });
 
 /**
@@ -612,21 +673,14 @@ app.post('/api/mining/purchase-contract', requireUserAuth, async (req, res) => {
 });
 
 /**
- * Helper to deduplicate and filter unsettled deposit documents, optionally auto-reconciling
- * valid CONFIRMED or APPROVED deposits when an authorized admin loads the queue.
+ * Read-only helper to deduplicate and filter unsettled deposit documents.
+ * Strictly read-only: HTTP GET endpoints MUST NEVER trigger financial writes or wallet credits.
  */
-async function collectAndReconcileUnsettledDeposits(
-  db: any,
-  rawDocs: FirebaseFirestore.QueryDocumentSnapshot[],
-  adminActor: { uid: string; email: string },
-  autoReconcileConfirmed: boolean
-): Promise<{
-  deposits: Array<ReturnType<typeof mapTransactionDoc>>;
-  autoReconciled: Array<{ txId: string; userId: string; amount: number; asset: string; message: string }>;
-}> {
+function collectUnsettledDepositsReadOnly(
+  rawDocs: FirebaseFirestore.QueryDocumentSnapshot[]
+): Array<ReturnType<typeof mapTransactionDoc>> {
   const seenKeys = new Set<string>();
   const deposits: Array<ReturnType<typeof mapTransactionDoc>> = [];
-  const autoReconciled: Array<{ txId: string; userId: string; amount: number; asset: string; message: string }> = [];
 
   for (const docSnap of rawDocs) {
     if (!docSnap) continue;
@@ -641,68 +695,33 @@ async function collectAndReconcileUnsettledDeposits(
     }
 
     if (
-      autoReconcileConfirmed &&
-      mapped.userId &&
-      (mapped.status === 'CONFIRMED' || mapped.status === 'APPROVED')
+      (mapped.status === 'CONFIRMED' || mapped.status === 'APPROVED') &&
+      !mapped.settlementWarning
     ) {
-      try {
-        const res = await settleDepositApproval(db as any, {
-          userId: mapped.userId,
-          txId: mapped.id,
-          admin: adminActor,
-          note: `Auto-reconciled verified ${mapped.status} deposit via Admin Settlement Console`,
-          allowManualCompletedStatus: true,
-          serverTimestamp: () => FieldValue.serverTimestamp(),
-        });
-        if (!res.alreadyProcessed) {
-          autoReconciled.push({
-            txId: mapped.id,
-            userId: mapped.userId,
-            amount: res.amount,
-            asset: res.asset,
-            message: res.message,
-          });
-        }
-        continue;
-      } catch (reconcileErr: any) {
-        const warningMsg =
-          reconcileErr?.message || 'Awaiting payment verification before wallet credit.';
-        mapped.settlementWarning = warningMsg;
-        try {
-          await db.doc(`users/${mapped.userId}/transactions/${mapped.id}`).update({
-            settlementStatus: 'AWAITING_VERIFICATION',
-            settlementWarning: warningMsg,
-            updatedAt: new Date().toISOString(),
-          });
-        } catch {
-          // Ignore if read-only test mock does not implement direct doc.update
-        }
-      }
+      mapped.settlementWarning =
+        'Awaiting independent blockchain/provider payment verification before wallet credit.';
     }
 
     deposits.push(mapped);
   }
 
-  return { deposits, autoReconciled };
+  return deposits;
 }
 
 /**
  * GET /api/admin/pending-deposits
- * Lists pending and unsettled CONFIRMED/APPROVED deposits for administrative review
+ * Lists pending and unsettled CONFIRMED/APPROVED deposits for administrative review (strictly read-only).
  */
-app.get('/api/admin/pending-deposits', requireAdminAuth, async (req, res) => {
+app.get('/api/admin/pending-deposits', requireAdminAuth, async (_req, res) => {
   try {
     if (!hasActiveFirestoreBackend()) {
       res.json({
         deposits: [],
-        autoReconciled: [],
         notice: 'Firebase Admin not connected to Firestore database.',
       });
       return;
     }
 
-    const caller = (req as any).adminCaller as AuthenticatedCaller;
-    const autoReconcile = req.query.autoReconcile !== 'false';
     const db = getActiveFirestore();
     const [pendingConfirmDocs, pendingReviewDocs, confirmedDocs, approvedDocs] =
       await queryTransactionsAcrossUsers(db, [
@@ -712,14 +731,14 @@ app.get('/api/admin/pending-deposits', requireAdminAuth, async (req, res) => {
         { type: 'DEPOSIT', status: 'APPROVED', limit: 50 },
       ]);
 
-    const { deposits, autoReconciled } = await collectAndReconcileUnsettledDeposits(
-      db,
-      [...pendingConfirmDocs, ...pendingReviewDocs, ...confirmedDocs, ...approvedDocs],
-      { uid: caller.uid, email: caller.email || caller.uid },
-      autoReconcile
-    );
+    const deposits = collectUnsettledDepositsReadOnly([
+      ...pendingConfirmDocs,
+      ...pendingReviewDocs,
+      ...confirmedDocs,
+      ...approvedDocs,
+    ]);
 
-    res.json({ deposits, autoReconciled });
+    res.json({ deposits });
   } catch (err: any) {
     console.error('Error listing pending deposits:', err);
     res.status(500).json({
@@ -730,26 +749,23 @@ app.get('/api/admin/pending-deposits', requireAdminAuth, async (req, res) => {
 
 /**
  * GET /api/admin/pending-requests
- * Lists all pending financial requests across users:
+ * Lists all pending financial requests across users (strictly read-only):
  * - Unsettled Deposits (`PENDING_CONFIRMATION`, `PENDING_REVIEW`, `CONFIRMED`, `APPROVED`)
  * - Daily Bonus / Task Reward Claims (`type == 'TASK_REWARD'`, `status == 'PENDING_REVIEW'`)
  * - Withdrawals (`type == 'WITHDRAWAL'`, `status == 'PENDING_REVIEW'`)
  */
-app.get('/api/admin/pending-requests', requireAdminAuth, async (req, res) => {
+app.get('/api/admin/pending-requests', requireAdminAuth, async (_req, res) => {
   try {
     if (!hasActiveFirestoreBackend()) {
       res.json({
         deposits: [],
         rewards: [],
         withdrawals: [],
-        autoReconciled: [],
         notice: 'Firebase Admin not connected to Firestore database.',
       });
       return;
     }
 
-    const caller = (req as any).adminCaller as AuthenticatedCaller;
-    const autoReconcile = req.query.autoReconcile !== 'false';
     const db = getActiveFirestore();
     const [
       pendingConfirmDocs,
@@ -767,23 +783,73 @@ app.get('/api/admin/pending-requests', requireAdminAuth, async (req, res) => {
       { type: 'WITHDRAWAL', status: 'PENDING_REVIEW', limit: 50 },
     ]);
 
-    const { deposits, autoReconciled } = await collectAndReconcileUnsettledDeposits(
-      db,
-      [...pendingConfirmDocs, ...pendingReviewDocs, ...confirmedDocs, ...approvedDocs],
-      { uid: caller.uid, email: caller.email || caller.uid },
-      autoReconcile
-    );
+    const deposits = collectUnsettledDepositsReadOnly([
+      ...pendingConfirmDocs,
+      ...pendingReviewDocs,
+      ...confirmedDocs,
+      ...approvedDocs,
+    ]);
 
     res.json({
       deposits,
       rewards: rewardDocs.map(mapTransactionDoc).filter((r) => !r.walletCredited && !r.walletSettled),
       withdrawals: withdrawalDocs.map(mapTransactionDoc).filter((w) => !w.walletSettled),
-      autoReconciled,
     });
   } catch (err: any) {
     console.error('Error listing pending requests:', err);
     res.status(500).json({
       error: err?.message || 'Failed to list pending financial requests.',
+    });
+  }
+});
+
+/**
+ * POST /api/admin/verify-trc20-deposit
+ * Independently verifies a USDT TRC20 deposit on-chain via TronGrid, atomically writes
+ * the server-only verifiedPayments/txhash_<normalized> receipt, and optionally settles
+ * the deposit via settleDepositApproval() when autoSettle === true.
+ */
+app.post('/api/admin/verify-trc20-deposit', requireAdminAuth, async (req, res) => {
+  const { userId, txId, dryRun, autoSettle, note } = req.body || {};
+  const caller = (req as any).adminCaller as AuthenticatedCaller;
+
+  if (!userId || !txId) {
+    res.status(400).json({
+      success: false,
+      error: 'Missing required fields: userId and txId must be specified.',
+    });
+    return;
+  }
+
+  if (!hasActiveFirestoreBackend()) {
+    res.status(503).json({
+      success: false,
+      error: 'Firebase Admin SDK is not initialized on this server instance.',
+      code: 'MISSING_ADMIN_CREDENTIALS',
+    });
+    return;
+  }
+
+  try {
+    const db = getActiveFirestore();
+    const isDryRun = Boolean(dryRun);
+    const result = await verifyAndRecordTrc20Deposit(db as any, {
+      userId: String(userId).trim(),
+      txId: String(txId).trim(),
+      admin: { uid: caller.uid, email: caller.email },
+      dryRun: isDryRun,
+      autoSettle: isDryRun ? false : Boolean(autoSettle),
+      note: note ? String(note) : undefined,
+    });
+
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err?.message || 'TRC20 deposit verification failed.',
     });
   }
 });

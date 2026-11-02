@@ -477,6 +477,28 @@ service cloud.firestore {
       }
     }
 
+    // =========================================================================
+    // 8. Server-Only Payment Verification & Replay Protection Collections
+    //    - Written exclusively by the trusted backend / Firebase Admin SDK
+    //    - Client users and admins via client SDK can NEVER create, read, or modify
+    //      verifiedPayments receipts, paymentReferences locks, or deposit attributions
+    // =========================================================================
+    match /verifiedPayments/{paymentRefId} {
+      allow read, write: if false;
+    }
+
+    match /paymentReferences/{paymentRefId} {
+      allow read, write: if false;
+    }
+
+    match /depositAddresses/{addressId} {
+      allow read, write: if false;
+    }
+
+    match /depositAttributions/{attributionId} {
+      allow read, write: if false;
+    }
+
     // Default deny all other paths
     match /{document=**} {
       allow read, write: if false;

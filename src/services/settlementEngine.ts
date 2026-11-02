@@ -152,6 +152,199 @@ export function normalizeAndValidateDepositReference(
   };
 }
 
+export interface IndependentPaymentVerificationReceipt {
+  verified: boolean;
+  provider: string;
+  txHash: string;
+  network: string;
+  tronNetwork?: string;
+  recipientAddress: string;
+  expectedTreasuryAddress?: string;
+  recipientVerified?: boolean;
+  senderAddress?: string;
+  contractAddress?: string;
+  contractAddressHex41?: string;
+  blockNumber?: number;
+  solidified?: boolean;
+  userId?: string;
+  txId?: string;
+  asset: string;
+  amount: number;
+  rawAmountBaseUnits?: string;
+  txStatus: 'SUCCESS' | 'CONFIRMED';
+  confirmations: number;
+  requiredConfirmations?: number;
+  verifiedAt?: string;
+}
+
+export function validateIndependentPaymentProof(
+  proof: Record<string, any> | null | undefined,
+  expected: {
+    userId?: string;
+    txId: string;
+    rawTxHash: string;
+    normalizedHash: string;
+    paymentRefDocId: string;
+    assetSymbol: string;
+    amount: number;
+    expectedNetwork?: string;
+    allowTestnetCreditForTesting?: boolean;
+  }
+): IndependentPaymentVerificationReceipt {
+  const {
+    userId,
+    txId,
+    rawTxHash,
+    normalizedHash,
+    paymentRefDocId,
+    assetSymbol,
+    amount,
+    expectedNetwork,
+    allowTestnetCreditForTesting = false,
+  } = expected;
+
+  if (!proof || proof.verified !== true) {
+    throw new Error(
+      `Unverified deposit payment on ${txId}: no independent blockchain/provider verification receipt found for txHash '${rawTxHash}' (verifiedPayments/${paymentRefDocId}). Status changes and plausible transaction hashes cannot credit wallets without verified payment proof.`
+    );
+  }
+
+  if (userId && proof.userId && String(proof.userId).trim() !== String(userId).trim()) {
+    throw new Error(
+      `Duplicate payment reference: verified payment receipt for '${rawTxHash}' is already bound to user '${proof.userId}', not '${userId}'.`
+    );
+  }
+
+  if (proof.txId && String(proof.txId).trim() !== String(txId).trim()) {
+    throw new Error(
+      `Duplicate payment reference: verified payment receipt for '${rawTxHash}' is already bound to deposit transaction '${proof.txId}', not '${txId}'.`
+    );
+  }
+
+  const proofRef = normalizeAndValidateDepositReference(proof.txHash, txId);
+  if (proofRef.normalizedHash !== normalizedHash) {
+    throw new Error(
+      `Payment verification mismatch on ${txId}: receipt txHash '${proof.txHash}' does not match deposit txHash '${rawTxHash}'.`
+    );
+  }
+
+  const txStatus = String(proof.txStatus || '').toUpperCase().trim();
+  if (txStatus !== 'SUCCESS' && txStatus !== 'CONFIRMED') {
+    throw new Error(
+      `Payment verification failed on ${txId}: on-chain/provider transaction status is '${proof.txStatus}' (expected 'SUCCESS' or 'CONFIRMED').`
+    );
+  }
+
+  const proofAsset = String(proof.asset || '').toUpperCase().trim();
+  if (proofAsset !== assetSymbol) {
+    throw new Error(
+      `Payment verification mismatch on ${txId}: verified asset '${proofAsset}' does not match deposit asset '${assetSymbol}'.`
+    );
+  }
+
+  const proofAmount = roundCrypto(Number(proof.amount));
+  if (!Number.isFinite(proofAmount) || Math.abs(proofAmount - amount) > 1e-8) {
+    throw new Error(
+      `Payment verification mismatch on ${txId}: verified amount (${proof.amount} ${proofAsset}) does not match claimed deposit amount (${amount} ${assetSymbol}).`
+    );
+  }
+
+  if (assetSymbol === 'USDT' && proof.rawAmountBaseUnits !== undefined && proof.rawAmountBaseUnits !== null) {
+    const rawUnitsStr = String(proof.rawAmountBaseUnits).trim();
+    if (!/^\d+$/.test(rawUnitsStr)) {
+      throw new Error(
+        `Payment verification failed on ${txId}: invalid USDT integer token base units '${rawUnitsStr}'.`
+      );
+    }
+    const expectedBaseUnits = BigInt(Math.round(amount * 1_000_000));
+    const proofBaseUnits = BigInt(rawUnitsStr);
+    if (proofBaseUnits !== expectedBaseUnits) {
+      throw new Error(
+        `Payment verification mismatch on ${txId}: verified USDT token base units (${proofBaseUnits.toString()} base units) do not match deposit amount (${expectedBaseUnits.toString()} base units).`
+      );
+    }
+  }
+
+  const proofNetwork = String(proof.network || '').trim();
+  if (!proofNetwork) {
+    throw new Error(`Payment verification failed on ${txId}: verified receipt is missing blockchain network.`);
+  }
+  const cleanProofNet = proofNetwork.toUpperCase();
+  const cleanTronNet = String(proof.tronNetwork || '').toLowerCase().trim();
+  const isTestnetReceipt =
+    cleanTronNet === 'nile' ||
+    cleanTronNet === 'shasta' ||
+    cleanProofNet.includes('NILE') ||
+    cleanProofNet.includes('SHASTA') ||
+    cleanProofNet.includes('TESTNET');
+
+  if (isTestnetReceipt && !allowTestnetCreditForTesting) {
+    throw new Error(
+      `Refusing to credit live Firestore wallet balance from a testnet payment receipt (${proofNetwork}) on deposit ${txId}: testnet and production share the same users/${userId || '{uid}'}/wallet/${assetSymbol} ledger.`
+    );
+  }
+
+  if (expectedNetwork && String(expectedNetwork).trim().length > 0) {
+    const cleanExpectedNet = String(expectedNetwork).toUpperCase().trim();
+    const bothTrc20 =
+      (cleanExpectedNet.includes('TRC20') || cleanExpectedNet.includes('TRON')) &&
+      (cleanProofNet.includes('TRC20') || cleanProofNet.includes('TRON'));
+    if (
+      !bothTrc20 &&
+      !cleanProofNet.includes(cleanExpectedNet) &&
+      !cleanExpectedNet.includes(cleanProofNet)
+    ) {
+      throw new Error(
+        `Payment verification mismatch on ${txId}: verified network '${proofNetwork}' does not match deposit network '${expectedNetwork}'.`
+      );
+    }
+  }
+
+  const recipientAddress = String(proof.recipientAddress || '').trim();
+  const expectedTreasury = String(proof.expectedTreasuryAddress || '').trim();
+  const isRecipientVerified =
+    proof.recipientVerified === true ||
+    (recipientAddress.length >= 10 && expectedTreasury.length >= 10 && recipientAddress === expectedTreasury);
+  if (recipientAddress.length < 10 || !isRecipientVerified) {
+    throw new Error(
+      `Payment verification failed on ${txId}: recipient address '${recipientAddress}' is not a verified platform custodial treasury address.`
+    );
+  }
+
+  const confirmations = Number(proof.confirmations);
+  const requiredConfirmations = Math.max(1, Number(proof.requiredConfirmations || 1));
+  if (!Number.isFinite(confirmations) || confirmations < requiredConfirmations) {
+    throw new Error(
+      `Payment verification failed on ${txId}: insufficient block confirmations (${proof.confirmations} < ${requiredConfirmations}).`
+    );
+  }
+
+  return {
+    verified: true,
+    provider: String(proof.provider || 'VERIFIED_PROVIDER'),
+    txHash: proofRef.rawTxHash,
+    network: proofNetwork,
+    tronNetwork: cleanTronNet || undefined,
+    recipientAddress,
+    expectedTreasuryAddress: expectedTreasury || undefined,
+    recipientVerified: true,
+    senderAddress: proof.senderAddress ? String(proof.senderAddress) : undefined,
+    contractAddress: proof.contractAddress ? String(proof.contractAddress) : undefined,
+    contractAddressHex41: proof.contractAddressHex41 ? String(proof.contractAddressHex41) : undefined,
+    blockNumber: Number.isFinite(Number(proof.blockNumber)) ? Number(proof.blockNumber) : undefined,
+    solidified: typeof proof.solidified === 'boolean' ? proof.solidified : undefined,
+    userId: proof.userId ? String(proof.userId) : userId,
+    txId: proof.txId ? String(proof.txId) : txId,
+    asset: assetSymbol,
+    amount: proofAmount,
+    rawAmountBaseUnits: proof.rawAmountBaseUnits !== undefined ? String(proof.rawAmountBaseUnits) : undefined,
+    txStatus: txStatus as 'SUCCESS' | 'CONFIRMED',
+    confirmations,
+    requiredConfirmations,
+    verifiedAt: String(proof.verifiedAt || new Date().toISOString()),
+  };
+}
+
 export interface SettlementResult {
   alreadyProcessed: boolean;
   userId: string;
@@ -197,8 +390,9 @@ const assertNotContradictoryForApproval = (txData: Record<string, any>, txId: st
 
 /**
  * 1. APPROVE DEPOSIT
- * Atomically verifies deposit request, locks global `paymentReferences/txhash_<normalized>`,
- * credits `users/{userId}/wallet/{asset}.balance`, marks transaction `COMPLETED` + `walletCredited: true` + `walletSettled: true`,
+ * Atomically verifies deposit request AND independent payment proof (`verifiedPayments/txhash_<normalized>`),
+ * locks global `paymentReferences/txhash_<normalized>`, credits `users/{userId}/wallet/{asset}.balance`,
+ * marks transaction `COMPLETED` + `walletCredited: true` + `walletSettled: true`,
  * and writes immutable `users/{userId}/settlements/{txId}`.
  */
 export async function settleDepositApproval(
@@ -209,10 +403,20 @@ export async function settleDepositApproval(
     admin: AdminActor;
     note?: string;
     allowManualCompletedStatus?: boolean;
+    allowTestnetCreditForTesting?: boolean;
+    paymentVerification?: IndependentPaymentVerificationReceipt;
     serverTimestamp?: () => any;
   }
 ): Promise<SettlementResult> {
-  const { userId, txId, admin, note, allowManualCompletedStatus = false } = params;
+  const {
+    userId,
+    txId,
+    admin,
+    note,
+    allowManualCompletedStatus = false,
+    allowTestnetCreditForTesting = false,
+    paymentVerification,
+  } = params;
   if (!userId || !txId) {
     throw new Error('Missing required userId or txId for deposit approval.');
   }
@@ -305,7 +509,8 @@ export async function settleDepositApproval(
     // Strict pending/reconciliation state check:
     // Standard approval requires PENDING_CONFIRMATION or PENDING_REVIEW.
     // Unsettled CONFIRMED, APPROVED, or COMPLETED statuses are only processed when explicitly invoked
-    // via authorized admin reconciliation (`allowManualCompletedStatus: true`).
+    // via authorized admin reconciliation (`allowManualCompletedStatus: true`), AND STILL REQUIRE
+    // independent payment verification below.
     const allowedStatuses = allowManualCompletedStatus
       ? ALLOWED_DEPOSIT_RECONCILE_STATUSES
       : ALLOWED_DEPOSIT_PENDING_STATUSES;
@@ -324,9 +529,14 @@ export async function settleDepositApproval(
       );
     }
 
-    // Global payment-reference uniqueness check (READ before any WRITE)
+    // Global payment-reference uniqueness AND independent payment verification reads (ALL READS BEFORE WRITES)
     const paymentRefDoc = db.doc(`paymentReferences/${paymentRefDocId}`);
-    const paymentRefSnap = await transaction.get(paymentRefDoc);
+    const verifiedPaymentDoc = db.doc(`verifiedPayments/${paymentRefDocId}`);
+    const [paymentRefSnap, verifiedPaymentSnap] = await Promise.all([
+      transaction.get(paymentRefDoc),
+      transaction.get(verifiedPaymentDoc),
+    ]);
+
     if (paymentRefSnap.exists) {
       const existingRef = paymentRefSnap.data() || {};
       if (existingRef.txId !== txId || existingRef.userId !== userId) {
@@ -335,6 +545,20 @@ export async function settleDepositApproval(
         );
       }
     }
+
+    // Require independent trusted payment verification (never trust txData fields or Firestore status alone)
+    const rawProof = paymentVerification || (verifiedPaymentSnap.exists ? verifiedPaymentSnap.data() : null);
+    const verifiedProof = validateIndependentPaymentProof(rawProof, {
+      userId,
+      txId,
+      rawTxHash,
+      normalizedHash,
+      paymentRefDocId,
+      assetSymbol,
+      amount,
+      expectedNetwork: txData.network,
+      allowTestnetCreditForTesting,
+    });
 
     const newBalance = roundCrypto(currentBalance + amount);
     const nowIso = new Date().toISOString();
@@ -355,6 +579,10 @@ export async function settleDepositApproval(
       type: 'DEPOSIT',
       asset: assetSymbol,
       amount,
+      network: verifiedProof.network,
+      recipientAddress: verifiedProof.recipientAddress,
+      confirmations: verifiedProof.confirmations,
+      verificationProvider: verifiedProof.provider,
       status: 'CREDITED',
       approvedBy: admin.email || admin.uid,
       approvedByUid: admin.uid,
@@ -396,6 +624,10 @@ export async function settleDepositApproval(
       previousBalance: currentBalance,
       newBalance,
       paymentReferenceId: paymentRefDocId,
+      verifiedNetwork: verifiedProof.network,
+      verifiedRecipientAddress: verifiedProof.recipientAddress,
+      verifiedConfirmations: verifiedProof.confirmations,
+      verificationProvider: verifiedProof.provider,
       approvedAt: nowIso,
       approvedBy: admin.email || admin.uid,
       approvedByUid: admin.uid,
@@ -414,6 +646,10 @@ export async function settleDepositApproval(
       amount,
       txHash: rawTxHash,
       paymentReferenceId: paymentRefDocId,
+      verifiedNetwork: verifiedProof.network,
+      verifiedRecipientAddress: verifiedProof.recipientAddress,
+      verifiedConfirmations: verifiedProof.confirmations,
+      verificationProvider: verifiedProof.provider,
       previousBalance: currentBalance,
       newBalance,
       previousLockedBalance: currentLocked,
