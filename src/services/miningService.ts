@@ -177,11 +177,16 @@ export class MiningFirestoreService {
                 hashrateTHs: 0.0,
                 efficiencyWTH: 16.0,
                 temperatureC: 45.0,
+                uptimeSeconds: 0,
                 status: 'IDLE' as const,
                 startedAt: null,
+                todayEstimatedRewardCoin: 0.0,
+                todayEstimatedRewardUSD: 0.0,
+                confirmedRewardCoin: 0.0,
                 poolName: 'Nexora Cloud Mining',
                 hardwareProfile: 'Balanced' as const,
-                planId: 'plan_genesis_shaft',
+                acceptedShares: 0,
+                rejectedShares: 0,
                 lastSessionId: `sess_${Date.now()}`,
                 isSimulated: true,
               };
@@ -195,12 +200,7 @@ export class MiningFirestoreService {
               onUpdate(
                 {
                   ...simulationPreferences,
-                  uptimeSeconds: 0,
-                  todayEstimatedRewardCoin: 0.0,
-                  todayEstimatedRewardUSD: 0.0,
-                  confirmedRewardCoin: 0.0,
-                  acceptedShares: 0,
-                  rejectedShares: 0,
+                  planId: 'plan_genesis_shaft',
                   updatedAt: new Date().toISOString(),
                 },
                 { fromCache: false }

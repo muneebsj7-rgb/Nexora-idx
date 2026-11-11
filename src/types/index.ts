@@ -194,6 +194,13 @@ export interface Transaction {
   contractId?: string;
   orderId?: string;
   idempotencyKey?: string;
+  paymentMethodId?: string;
+  recipientAddress?: string;
+  senderAddress?: string;
+  memoUsed?: string;
+  nativeAsset?: string;
+  nativeAmount?: number;
+  exchangeRateUSD?: number;
   updatedAt?: string;
 }
 

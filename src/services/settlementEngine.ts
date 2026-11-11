@@ -15,6 +15,36 @@ export interface AdminActor {
   email: string;
 }
 
+export interface ManualAdminDepositAttestation {
+  explorerConfirmed: boolean;
+  recipientAddress?: string;
+  confirmedRecipientAddress?: string;
+  network?: string;
+  confirmedNetwork?: string;
+  asset?: string;
+  confirmedAsset?: string;
+  amount?: number;
+  confirmedAmount?: number;
+  confirmations?: number;
+  creditToPrimaryUsdt?: boolean;
+  exchangeRateUSD?: number;
+  usdtCreditAmount?: number;
+  note?: string;
+  verificationNote?: string;
+}
+
+import {
+  validatePaymentMethodAddress,
+  normalizeNetworkCode,
+  normalizePaymentMethodId,
+  inferPaymentMethodId,
+  sanitizePaymentMethodConfig,
+  validateTrustedServerRateQuote,
+  addCryptoBalancesBigInt,
+  type TrustedServerExchangeRateQuote,
+  type ValidatedExchangeRateCalculation,
+} from './paymentMethodService.ts';
+
 export interface DocSnapshotLike {
   exists: boolean;
   id: string;
@@ -289,8 +319,28 @@ export function validateIndependentPaymentProof(
     const bothTrc20 =
       (cleanExpectedNet.includes('TRC20') || cleanExpectedNet.includes('TRON')) &&
       (cleanProofNet.includes('TRC20') || cleanProofNet.includes('TRON'));
+    const bothBtc =
+      (cleanExpectedNet.includes('BTC') || cleanExpectedNet.includes('BITCOIN')) &&
+      (cleanProofNet.includes('BTC') || cleanProofNet.includes('BITCOIN'));
+    const bothErc20 =
+      (cleanExpectedNet.includes('ERC20') || cleanExpectedNet.includes('ETHEREUM')) &&
+      (cleanProofNet.includes('ERC20') || cleanProofNet.includes('ETHEREUM'));
+    const bothBep20 =
+      (cleanExpectedNet.includes('BEP20') || cleanExpectedNet.includes('BNB') || cleanExpectedNet.includes('BSC')) &&
+      (cleanProofNet.includes('BEP20') || cleanProofNet.includes('BNB') || cleanProofNet.includes('BSC'));
+    const bothSol =
+      (cleanExpectedNet.includes('SOL') || cleanExpectedNet.includes('SOLANA')) &&
+      (cleanProofNet.includes('SOL') || cleanProofNet.includes('SOLANA'));
+    const bothLtc =
+      (cleanExpectedNet.includes('LTC') || cleanExpectedNet.includes('LITECOIN')) &&
+      (cleanProofNet.includes('LTC') || cleanProofNet.includes('LITECOIN'));
     if (
       !bothTrc20 &&
+      !bothBtc &&
+      !bothErc20 &&
+      !bothBep20 &&
+      !bothSol &&
+      !bothLtc &&
       !cleanProofNet.includes(cleanExpectedNet) &&
       !cleanExpectedNet.includes(cleanProofNet)
     ) {
@@ -353,6 +403,11 @@ export interface SettlementResult {
   status: 'COMPLETED' | 'REJECTED';
   asset: string;
   amount: number;
+  creditedAsset?: string;
+  creditedAmount?: number;
+  nativeAsset?: string;
+  nativeAmount?: number;
+  exchangeRateUSD?: number;
   previousBalance: number;
   newBalance: number;
   previousLockedBalance: number;
@@ -405,6 +460,8 @@ export async function settleDepositApproval(
     allowManualCompletedStatus?: boolean;
     allowTestnetCreditForTesting?: boolean;
     paymentVerification?: IndependentPaymentVerificationReceipt;
+    manualVerification?: ManualAdminDepositAttestation;
+    trustedRateQuote?: TrustedServerExchangeRateQuote | null;
     serverTimestamp?: () => any;
   }
 ): Promise<SettlementResult> {
@@ -416,12 +473,26 @@ export async function settleDepositApproval(
     allowManualCompletedStatus = false,
     allowTestnetCreditForTesting = false,
     paymentVerification,
+    manualVerification,
+    trustedRateQuote,
   } = params;
   if (!userId || !txId) {
     throw new Error('Missing required userId or txId for deposit approval.');
   }
   if (!admin || (!admin.uid && !admin.email)) {
     throw new Error('Authorized administrator actor is required for deposit settlement.');
+  }
+
+  // CRITICAL-02 Guard: Reject any caller/client-supplied exchange rate or USDT credit overrides
+  if (
+    manualVerification &&
+    (manualVerification.exchangeRateUSD !== undefined ||
+      manualVerification.usdtCreditAmount !== undefined ||
+      (manualVerification as any).amountUSD !== undefined)
+  ) {
+    throw new Error(
+      `Forbidden conversion override on ${txId}: caller-supplied exchangeRateUSD, usdtCreditAmount, or amountUSD is not permitted. Non-USDT conversion rates must come exclusively from a trusted server-side exchangeRateQuote.`
+    );
   }
 
   return db.runTransaction(async (transaction) => {
@@ -464,7 +535,40 @@ export async function settleDepositApproval(
       );
     }
 
-    const walletRef = db.doc(`users/${userId}/wallet/${assetSymbol}`);
+    // Resolve candidate paymentMethodId from deposit document or (asset, network)
+    const explicitMethodId =
+      typeof txData.paymentMethodId === 'string' && txData.paymentMethodId.trim()
+        ? normalizePaymentMethodId(txData.paymentMethodId)
+        : '';
+    let inferredMethodId = explicitMethodId;
+    if (!inferredMethodId && txData.network) {
+      try {
+        inferredMethodId = inferPaymentMethodId(assetSymbol, String(txData.network));
+      } catch {
+        inferredMethodId = '';
+      }
+    }
+
+    const paymentMethodDoc = inferredMethodId ? db.doc(`paymentMethods/${inferredMethodId}`) : null;
+    const paymentMethodSnap = paymentMethodDoc ? await transaction.get(paymentMethodDoc) : null;
+
+    const requiresPaymentMethodBinding =
+      Boolean(explicitMethodId) ||
+      Boolean(manualVerification) ||
+      Boolean(paymentMethodSnap?.exists) ||
+      Boolean(txData.recipientAddress) ||
+      Boolean(txData.memoUsed);
+
+    const convertToPrimaryUsdt =
+      assetSymbol !== 'USDT' &&
+      (requiresPaymentMethodBinding ||
+        Boolean(trustedRateQuote) ||
+        (Boolean(manualVerification) && manualVerification?.creditToPrimaryUsdt !== false));
+
+    const targetWalletSymbol = convertToPrimaryUsdt ? 'USDT' : assetSymbol;
+    const targetAssetSpec = AUTHORITATIVE_ASSET_CONFIG[targetWalletSymbol] || assetSpec;
+
+    const walletRef = db.doc(`users/${userId}/wallet/${targetWalletSymbol}`);
     const walletSnap = await transaction.get(walletRef);
     const walletData = walletSnap.exists ? walletSnap.data() || {} : {};
     const currentBalance = roundCrypto(Number(walletData.balance || 0));
@@ -490,8 +594,13 @@ export async function settleDepositApproval(
         txId,
         type: 'DEPOSIT',
         status: 'COMPLETED',
-        asset: assetSymbol,
-        amount,
+        asset: String(txData.creditedAsset || targetWalletSymbol),
+        amount: roundCrypto(Number(txData.creditedAmount || amount)),
+        creditedAsset: String(txData.creditedAsset || targetWalletSymbol),
+        creditedAmount: roundCrypto(Number(txData.creditedAmount || amount)),
+        nativeAsset: String(txData.nativeAsset || assetSymbol),
+        nativeAmount: roundCrypto(Number(txData.nativeAmount || amount)),
+        exchangeRateUSD: txData.exchangeRateUSD !== undefined ? Number(txData.exchangeRateUSD) : undefined,
         previousBalance: currentBalance,
         newBalance: currentBalance,
         previousLockedBalance: currentLocked,
@@ -507,10 +616,6 @@ export async function settleDepositApproval(
     );
 
     // Strict pending/reconciliation state check:
-    // Standard approval requires PENDING_CONFIRMATION or PENDING_REVIEW.
-    // Unsettled CONFIRMED, APPROVED, or COMPLETED statuses are only processed when explicitly invoked
-    // via authorized admin reconciliation (`allowManualCompletedStatus: true`), AND STILL REQUIRE
-    // independent payment verification below.
     const allowedStatuses = allowManualCompletedStatus
       ? ALLOWED_DEPOSIT_RECONCILE_STATUSES
       : ALLOWED_DEPOSIT_PENDING_STATUSES;
@@ -546,8 +651,152 @@ export async function settleDepositApproval(
       }
     }
 
-    // Require independent trusted payment verification (never trust txData fields or Firestore status alone)
-    const rawProof = paymentVerification || (verifiedPaymentSnap.exists ? verifiedPaymentSnap.data() : null);
+    // CRITICAL-01: Authoritative Server-Side Payment Method & Recipient Binding
+    let authoritativeRecipientAddress = '';
+    let authoritativeMethodNetworkCode: string | null = null;
+    let authoritativeConfirmationsRequired = 1;
+    let authoritativeMemoRequired = false;
+    let authoritativeMemoValue = '';
+
+    if (requiresPaymentMethodBinding) {
+      if (!inferredMethodId || !paymentMethodSnap || !paymentMethodSnap.exists) {
+        throw new Error(
+          `Unconfigured payment method on ${txId}: authoritative record paymentMethods/${inferredMethodId || 'unknown'} does not exist.`
+        );
+      }
+
+      const rawMethodData = paymentMethodSnap.data() || {};
+      const rawConfiguredAddr = String(rawMethodData.receivingAddress || '').trim();
+      const rawMethodNetwork = String(rawMethodData.networkCode || rawMethodData.network || '');
+      const methodAddrCheck = validatePaymentMethodAddress(rawMethodNetwork, rawConfiguredAddr);
+
+      if (!rawConfiguredAddr || !methodAddrCheck.valid) {
+        throw new Error(
+          `Unconfigured payment method on ${txId}: paymentMethods/${inferredMethodId} does not have a valid configured owner receiving address (${methodAddrCheck.error || 'empty address'}).`
+        );
+      }
+
+      const sanitizedMethod = sanitizePaymentMethodConfig({
+        ...rawMethodData,
+        id: inferredMethodId,
+      });
+
+      if (rawMethodData.enabled !== true || sanitizedMethod.enabled !== true) {
+        throw new Error(
+          `Disabled payment method on ${txId}: paymentMethods/${inferredMethodId} is disabled and cannot be used for deposit approval.`
+        );
+      }
+
+      if (sanitizedMethod.settlementEnabled !== true) {
+        throw new Error(
+          `Settlement disabled for payment method '${inferredMethodId}' (${assetSymbol}): real-money settlement for ${assetSymbol} is disabled until independent chain and exchange-rate verification is enabled.`
+        );
+      }
+
+      if (sanitizedMethod.symbol !== assetSymbol) {
+        throw new Error(
+          `Payment method asset mismatch on ${txId}: paymentMethods/${inferredMethodId} is configured for ${sanitizedMethod.symbol}, not deposit asset ${assetSymbol}.`
+        );
+      }
+
+      const depositNetCode = normalizeNetworkCode(String(txData.network || ''));
+      if (depositNetCode !== sanitizedMethod.networkCode) {
+        throw new Error(
+          `Payment method network mismatch on ${txId}: deposit network '${txData.network}' (${depositNetCode}) does not match paymentMethods/${inferredMethodId} network '${sanitizedMethod.networkCode}'.`
+        );
+      }
+
+      if (amount < sanitizedMethod.minDeposit) {
+        throw new Error(
+          `Deposit amount (${amount} ${assetSymbol}) is below paymentMethods/${inferredMethodId} minimum deposit (${sanitizedMethod.minDeposit} ${assetSymbol}).`
+        );
+      }
+
+      authoritativeRecipientAddress = sanitizedMethod.receivingAddress;
+      authoritativeMethodNetworkCode = sanitizedMethod.networkCode;
+      authoritativeConfirmationsRequired = sanitizedMethod.confirmationsRequired;
+      authoritativeMemoRequired = sanitizedMethod.memoRequired;
+      authoritativeMemoValue = String(sanitizedMethod.memoValue || '').trim();
+
+      // Check deposit recipientAddress (if present) for spoofing or silent address rotation
+      const txRecipient = String(txData.recipientAddress || '').trim();
+      if (txRecipient) {
+        if (txRecipient.toLowerCase() !== authoritativeRecipientAddress.toLowerCase()) {
+          const previousAddr = String(rawMethodData.previousReceivingAddress || '').trim();
+          const authorizedHistorical = String(txData.authorizedHistoricalRecipient || '').trim();
+          const isRotatedMatch =
+            Boolean(previousAddr) && txRecipient.toLowerCase() === previousAddr.toLowerCase();
+
+          if (isRotatedMatch) {
+            if (
+              authorizedHistorical &&
+              authorizedHistorical.toLowerCase() === txRecipient.toLowerCase()
+            ) {
+              authoritativeRecipientAddress = authorizedHistorical;
+            } else {
+              throw new Error(
+                `Address rotation detected on ${txId}: deposit targeted outdated receiving address '${txRecipient}', which was rotated to '${authoritativeRecipientAddress}'. Outdated address deposits cannot be approved without verified historical payment instructions.`
+              );
+            }
+          } else {
+            throw new Error(
+              `Spoofed or mismatched recipient address on ${txId}: deposit recipientAddress '${txRecipient}' does not match authoritative owner address '${authoritativeRecipientAddress}' in paymentMethods/${inferredMethodId}.`
+            );
+          }
+        }
+      }
+
+      // Check manualVerification recipient/network/asset/amount if supplied by admin request
+      if (manualVerification) {
+        const manualRecip = String(
+          manualVerification.recipientAddress || manualVerification.confirmedRecipientAddress || ''
+        ).trim();
+        if (manualRecip && manualRecip.toLowerCase() !== authoritativeRecipientAddress.toLowerCase()) {
+          throw new Error(
+            `Spoofed or mismatched recipient address on ${txId}: manualVerification recipient '${manualRecip}' does not match authoritative owner address '${authoritativeRecipientAddress}' in paymentMethods/${inferredMethodId}.`
+          );
+        }
+        const manualNet = String(
+          manualVerification.network || manualVerification.confirmedNetwork || ''
+        ).trim();
+        if (manualNet) {
+          const manualNetCode = normalizeNetworkCode(manualNet);
+          if (manualNetCode !== sanitizedMethod.networkCode) {
+            throw new Error(
+              `Payment verification mismatch on ${txId}: manualVerification network '${manualNet}' (${manualNetCode}) does not match paymentMethods/${inferredMethodId} network '${sanitizedMethod.networkCode}'.`
+            );
+          }
+        }
+      }
+
+      // Check required Memo / Destination Tag on deposit document
+      if (authoritativeMemoRequired) {
+        if (!authoritativeMemoValue) {
+          throw new Error(
+            `Payment method ${inferredMethodId} requires a Memo/Destination Tag, but memoValue is not configured.`
+          );
+        }
+        const txMemo = String(txData.memoUsed || '').trim();
+        if (txMemo !== authoritativeMemoValue) {
+          throw new Error(
+            `Missing or incorrect Memo/Destination Tag on ${txId}: expected '${authoritativeMemoValue}', received '${txMemo}'.`
+          );
+        }
+      }
+    }
+
+    // HIGH-03: Never fabricate a verifiedPayments receipt from a manual checkbox attestation.
+    // Independent blockchain verification in `verifiedPayments/txhash_<normalized>` (or `paymentVerification`) is ALWAYS required.
+    const rawProof =
+      paymentVerification ||
+      (verifiedPaymentSnap.exists ? verifiedPaymentSnap.data() : null);
+
+    if (!rawProof) {
+      throw new Error(
+        `Unverified deposit payment on ${txId}: no independent blockchain/provider verification receipt found for txHash '${rawTxHash}' (verifiedPayments/${paymentRefDocId}). Manual checkbox attestation cannot substitute for independent blockchain verification.`
+      );
+    }
+
     const verifiedProof = validateIndependentPaymentProof(rawProof, {
       userId,
       txId,
@@ -560,12 +809,71 @@ export async function settleDepositApproval(
       allowTestnetCreditForTesting,
     });
 
-    const newBalance = roundCrypto(currentBalance + amount);
+    // Enforce paymentMethod-specific recipient, confirmationsRequired, memo, and TRC20 verifier rules against the independent proof
+    if (requiresPaymentMethodBinding) {
+      if (
+        authoritativeMethodNetworkCode === 'TRC20' &&
+        verifiedProof.provider !== 'TRONGRID_INDEXER'
+      ) {
+        throw new Error(
+          `TRC20 deposit verification on ${txId} must use the trusted TRON verifier (provider 'TRONGRID_INDEXER', received '${verifiedProof.provider}'). Manual approval cannot bypass TRON verification.`
+        );
+      }
+
+      if (
+        verifiedProof.recipientAddress.toLowerCase() !==
+        authoritativeRecipientAddress.toLowerCase()
+      ) {
+        throw new Error(
+          `Spoofed or mismatched recipient address on ${txId}: verified blockchain recipient '${verifiedProof.recipientAddress}' does not match authoritative owner address '${authoritativeRecipientAddress}' in paymentMethods/${inferredMethodId}.`
+        );
+      }
+
+      if (verifiedProof.confirmations < authoritativeConfirmationsRequired) {
+        throw new Error(
+          `Payment verification failed on ${txId}: insufficient block confirmations (${verifiedProof.confirmations} < ${authoritativeConfirmationsRequired} required by paymentMethods/${inferredMethodId}).`
+        );
+      }
+
+      if (authoritativeMemoRequired) {
+        const proofMemo = String(
+          (rawProof as any).memoUsed ?? (rawProof as any).memo ?? ''
+        ).trim();
+        if (proofMemo !== authoritativeMemoValue) {
+          throw new Error(
+            `Missing or incorrect Memo/Destination Tag in verified payment receipt on ${txId}: expected '${authoritativeMemoValue}', received '${proofMemo}'.`
+          );
+        }
+      }
+    }
+
+    // CRITICAL-02: Server-Side Exchange Rate Validation & BigInt Fixed-Point Conversion
+    // NEVER use client-supplied txData.amountUSD, manualVerification.exchangeRateUSD, or static defaultUsdRate!
+    let creditAmount = amount;
+    let resolvedExchangeRateUSD: number | undefined = assetSymbol === 'USDT' ? 1.0 : undefined;
+    let rateCalculationMeta: ValidatedExchangeRateCalculation | null = null;
+
+    if (convertToPrimaryUsdt) {
+      rateCalculationMeta = validateTrustedServerRateQuote(
+        trustedRateQuote,
+        assetSymbol,
+        amount
+      );
+      creditAmount = rateCalculationMeta.creditedUsdtAmount;
+      resolvedExchangeRateUSD = rateCalculationMeta.exchangeRateUSD;
+    }
+
+    if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
+      throw new Error(`Invalid computed wallet credit amount (${creditAmount}) on deposit ${txId}.`);
+    }
+
+    // Safe BigInt fixed-point balance addition (eliminates IEEE-754 floating-point drift)
+    const newBalance = addCryptoBalancesBigInt(currentBalance, creditAmount);
     const nowIso = new Date().toISOString();
     const resolvedPriceUSD =
-      Number(txData.amountUSD) > 0 && amount > 0
-        ? Number((Number(txData.amountUSD) / amount).toFixed(4))
-        : Number(walletData.priceUSD || assetSpec.defaultUsdRate);
+      targetWalletSymbol === 'USDT'
+        ? 1.0
+        : Number(walletData.priceUSD || targetAssetSpec.defaultUsdRate);
     const resolvedChange24h =
       walletData.change24h !== undefined ? Number(walletData.change24h) : 0;
 
@@ -579,6 +887,10 @@ export async function settleDepositApproval(
       type: 'DEPOSIT',
       asset: assetSymbol,
       amount,
+      creditedAsset: targetWalletSymbol,
+      creditedAmount: creditAmount,
+      ...(resolvedExchangeRateUSD !== undefined ? { exchangeRateUSD: resolvedExchangeRateUSD } : {}),
+      ...(rateCalculationMeta ? { rateCalculation: rateCalculationMeta } : {}),
       network: verifiedProof.network,
       recipientAddress: verifiedProof.recipientAddress,
       confirmations: verifiedProof.confirmations,
@@ -592,8 +904,8 @@ export async function settleDepositApproval(
     // 2. Credit wallet balance once with full authoritative asset metadata
     if (!walletSnap.exists) {
       transaction.set(walletRef, {
-        symbol: assetSymbol,
-        name: assetSpec.name,
+        symbol: targetWalletSymbol,
+        name: targetAssetSpec.name,
         balance: newBalance,
         lockedBalance: 0,
         priceUSD: resolvedPriceUSD,
@@ -602,8 +914,8 @@ export async function settleDepositApproval(
       });
     } else {
       transaction.update(walletRef, {
-        symbol: walletData.symbol || assetSymbol,
-        name: walletData.name || assetSpec.name,
+        symbol: walletData.symbol || targetWalletSymbol,
+        name: walletData.name || targetAssetSpec.name,
         balance: newBalance,
         lockedBalance: currentLocked,
         priceUSD: walletData.priceUSD !== undefined ? Number(walletData.priceUSD) : resolvedPriceUSD,
@@ -612,6 +924,15 @@ export async function settleDepositApproval(
       });
     }
 
+    const effectiveNote =
+      note ||
+      manualVerification?.note ||
+      manualVerification?.verificationNote ||
+      txData.adminNote ||
+      (convertToPrimaryUsdt
+        ? `Deposit of ${amount} ${assetSymbol} verified and converted to +${creditAmount} USDT (@ $${resolvedExchangeRateUSD} via ${rateCalculationMeta?.provider}).`
+        : 'Deposit verified and credited to Available Balance.');
+
     // 3. Update deposit transaction settlement fields
     transaction.update(txRef, {
       userId,
@@ -619,8 +940,18 @@ export async function settleDepositApproval(
       settlementStatus: 'CREDITED',
       walletCredited: true,
       walletSettled: true,
-      creditedAmount: amount,
-      creditedAsset: assetSymbol,
+      creditedAmount: creditAmount,
+      creditedAsset: targetWalletSymbol,
+      nativeAsset: assetSymbol,
+      nativeAmount: amount,
+      ...(resolvedExchangeRateUSD !== undefined ? { exchangeRateUSD: resolvedExchangeRateUSD } : {}),
+      ...(rateCalculationMeta
+        ? {
+            exchangeRateProvider: rateCalculationMeta.provider,
+            exchangeRateQuotedAt: rateCalculationMeta.quotedAt,
+            exchangeRateValidityMs: rateCalculationMeta.validityWindowMs,
+          }
+        : {}),
       previousBalance: currentBalance,
       newBalance,
       paymentReferenceId: paymentRefDocId,
@@ -631,7 +962,7 @@ export async function settleDepositApproval(
       approvedAt: nowIso,
       approvedBy: admin.email || admin.uid,
       approvedByUid: admin.uid,
-      adminNote: note || txData.adminNote || 'Deposit verified and credited to Available Balance.',
+      adminNote: effectiveNote,
       updatedAt: nowIso,
     });
 
@@ -642,8 +973,12 @@ export async function settleDepositApproval(
       type: 'DEPOSIT',
       action: 'APPROVE_DEPOSIT',
       status: 'COMPLETED',
-      asset: assetSymbol,
-      amount,
+      asset: targetWalletSymbol,
+      amount: creditAmount,
+      nativeAsset: assetSymbol,
+      nativeAmount: amount,
+      ...(resolvedExchangeRateUSD !== undefined ? { exchangeRateUSD: resolvedExchangeRateUSD } : {}),
+      ...(rateCalculationMeta ? { rateCalculation: rateCalculationMeta } : {}),
       txHash: rawTxHash,
       paymentReferenceId: paymentRefDocId,
       verifiedNetwork: verifiedProof.network,
@@ -657,7 +992,7 @@ export async function settleDepositApproval(
       processedBy: admin.email || admin.uid,
       processedByUid: admin.uid,
       processedAt: nowIso,
-      note: note || 'Deposit verified and credited to Available Balance.',
+      note: effectiveNote,
     });
 
     return {
@@ -666,14 +1001,21 @@ export async function settleDepositApproval(
       txId,
       type: 'DEPOSIT',
       status: 'COMPLETED',
-      asset: assetSymbol,
-      amount,
+      asset: targetWalletSymbol,
+      amount: creditAmount,
+      creditedAsset: targetWalletSymbol,
+      creditedAmount: creditAmount,
+      nativeAsset: assetSymbol,
+      nativeAmount: amount,
+      exchangeRateUSD: resolvedExchangeRateUSD,
       previousBalance: currentBalance,
       newBalance,
       previousLockedBalance: currentLocked,
       newLockedBalance: currentLocked,
       paymentReferenceId: paymentRefDocId,
-      message: `Approved and credited +${amount} ${assetSymbol} to user Available Balance.`,
+      message: convertToPrimaryUsdt
+        ? `Approved ${amount} ${assetSymbol} and credited +${creditAmount} USDT to user Available Balance.`
+        : `Approved and credited +${creditAmount} ${targetWalletSymbol} to user Available Balance.`,
     };
   });
 }
@@ -1216,8 +1558,47 @@ export async function settleRewardApproval(
       );
     }
 
+    // Per-task / per-day deterministic idempotency lock (ALL READS BEFORE WRITES)
+    const claimLockKey =
+      verifiedMeta.rewardSource === 'TASK_BOUNTY' && verifiedMeta.taskId
+        ? `task_${String(verifiedMeta.taskId).trim().replace(/[^a-zA-Z0-9_-]/g, '')}`
+        : verifiedMeta.rewardSource === 'DAILY_STREAK' && verifiedMeta.rewardDay
+        ? `streak_${String(verifiedMeta.rewardDay).trim().replace(/[^a-zA-Z0-9_-]/g, '')}`
+        : null;
+
+    const rewardClaimLockRef = claimLockKey
+      ? db.doc(`users/${userId}/rewardClaims/${claimLockKey}`)
+      : null;
+    const rewardClaimLockSnap = rewardClaimLockRef
+      ? await transaction.get(rewardClaimLockRef)
+      : null;
+
+    if (rewardClaimLockSnap && rewardClaimLockSnap.exists) {
+      const existingLock = rewardClaimLockSnap.data() || {};
+      if (existingLock.txId && String(existingLock.txId) !== String(txId)) {
+        throw new Error(
+          `Duplicate reward claim: '${claimLockKey}' has already been approved and credited for user ${userId} (txId: ${existingLock.txId}).`
+        );
+      }
+    }
+
     const newBalance = roundCrypto(currentBalance + amount);
     const nowIso = new Date().toISOString();
+
+    if (rewardClaimLockRef && claimLockKey) {
+      transaction.set(rewardClaimLockRef, {
+        claimKey: claimLockKey,
+        userId,
+        txId,
+        rewardSource: verifiedMeta.rewardSource,
+        taskId: verifiedMeta.taskId,
+        rewardDay: verifiedMeta.rewardDay,
+        amount,
+        approvedAt: nowIso,
+        approvedBy: admin.email || admin.uid,
+        approvedByUid: admin.uid,
+      });
+    }
 
     if (!walletSnap.exists) {
       transaction.set(walletRef, {

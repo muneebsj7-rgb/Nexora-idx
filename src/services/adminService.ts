@@ -1,5 +1,7 @@
 import { UserProfile, Transaction } from '../types';
 import { auth } from './firebase';
+import type { ManualPaymentMethodConfig } from './paymentMethodService';
+import type { ManualAdminDepositAttestation } from './settlementEngine';
 
 export interface PendingRequestItem extends Transaction {
   userId: string;
@@ -120,6 +122,62 @@ export class AdminService {
   }
 
   /**
+   * Fetches enabled, owner-configured manual crypto payment methods for end-user deposits.
+   */
+  static async getPublicPaymentMethods(): Promise<ManualPaymentMethodConfig[]> {
+    const response = await fetch('/api/payment-methods', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || `Failed to load payment methods (HTTP ${response.status})`);
+    }
+    return Array.isArray(data.paymentMethods) ? data.paymentMethods : [];
+  }
+
+  /**
+   * Fetches all manual crypto payment methods (enabled and disabled) for the Admin Console.
+   */
+  static async getAdminPaymentMethods(): Promise<ManualPaymentMethodConfig[]> {
+    const headers = await getAdminAuthHeaders();
+    const response = await fetch('/api/admin/payment-methods', {
+      method: 'GET',
+      headers,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || `Failed to load admin payment methods (HTTP ${response.status})`);
+    }
+    return Array.isArray(data.paymentMethods) ? data.paymentMethods : [];
+  }
+
+  /**
+   * Updates an owner-configured manual crypto payment method via authenticated Admin API.
+   */
+  static async updateAdminPaymentMethod(
+    methodId: string,
+    payload: Partial<ManualPaymentMethodConfig> & { confirmSharedAddressAcrossNetworks?: boolean }
+  ): Promise<{
+    success: boolean;
+    message: string;
+    paymentMethod: ManualPaymentMethodConfig;
+    paymentMethods: ManualPaymentMethodConfig[];
+  }> {
+    const headers = await getAdminAuthHeaders();
+    const response = await fetch(`/api/admin/payment-methods/${encodeURIComponent(methodId)}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || `Failed to update payment method (HTTP ${response.status})`);
+    }
+    return data;
+  }
+
+  /**
    * Runs a strictly read-only on-chain contract and endpoint check against the configured TRON network.
    * Performs zero Firestore reads/writes and settles no deposits.
    */
@@ -178,7 +236,8 @@ export class AdminService {
   static async approveDeposit(
     userId: string,
     txId: string,
-    note?: string
+    note?: string,
+    manualVerification?: ManualAdminDepositAttestation
   ): Promise<{
     success: boolean;
     message: string;
@@ -195,7 +254,12 @@ export class AdminService {
     const response = await fetch('/api/admin/approve-deposit', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ userId, txId, note }),
+      body: JSON.stringify({
+        userId,
+        txId,
+        note,
+        ...(manualVerification ? { manualVerification } : {}),
+      }),
     });
 
     const data = await response.json();

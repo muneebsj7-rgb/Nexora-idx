@@ -19,7 +19,14 @@ service cloud.firestore {
              request.auth.token.email_verified == true &&
              (
                request.auth.token.admin == true ||
-               exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+               exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+               (
+                 'email' in request.auth.token &&
+                 request.auth.token.email in [
+                   'muneebsj7@gmail.com',
+                   'procurement.initialsaudi@gmail.com'
+                 ]
+               )
              );
     }
 
@@ -75,6 +82,18 @@ service cloud.firestore {
         'creditedAmount',
         'creditedAsset',
         'creditedAt',
+        'nativeAsset',
+        'nativeAmount',
+        'exchangeRateUSD',
+        'exchangeRateProvider',
+        'exchangeRateQuotedAt',
+        'exchangeRateValidityMs',
+        'usdtCreditAmount',
+        'authorizedHistoricalRecipient',
+        'paymentReferenceId',
+        'verifiedRecipientAddress',
+        'verifiedConfirmations',
+        'verificationProvider',
         'approvedBy',
         'approvedAt',
         'rejectedBy',
@@ -91,6 +110,32 @@ service cloud.firestore {
         'role',
         'admin'
       ]);
+    }
+
+    // Verifies that a client DEPOSIT request binds to an existing, enabled owner payment method
+    // and cannot spoof recipientAddress or bypass a required Memo/Destination Tag.
+    function isValidDepositPaymentMethodBinding(data) {
+      return 'paymentMethodId' in data
+             && data.paymentMethodId is string
+             && data.paymentMethodId.size() >= 3
+             && data.paymentMethodId.size() <= 64
+             && exists(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId))
+             && get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.enabled == true
+             && get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.settlementEnabled != false
+             && get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.symbol == data.asset
+             && get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.receivingAddress is string
+             && get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.receivingAddress.size() >= 10
+             && 'recipientAddress' in data
+             && data.recipientAddress is string
+             && data.recipientAddress == get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.receivingAddress
+             && (
+               get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.memoRequired != true
+               || (
+                 'memoUsed' in data
+                 && data.memoUsed is string
+                 && data.memoUsed == get(/databases/$(database)/documents/paymentMethods/$(data.paymentMethodId)).data.memoValue
+               )
+             );
     }
 
     // =========================================================================
@@ -243,6 +288,10 @@ service cloud.firestore {
                             'timestamp',
                             'network',
                             'txHash',
+                            'paymentMethodId',
+                            'recipientAddress',
+                            'senderAddress',
+                            'memoUsed',
                             'note',
                             'createdAt'
                           ])
@@ -255,6 +304,9 @@ service cloud.firestore {
                           && request.resource.data.network is string
                           && request.resource.data.network.size() >= 2
                           && request.resource.data.network.size() <= 64
+                          && isValidDepositPaymentMethodBinding(request.resource.data)
+                          && (!('senderAddress' in request.resource.data) || (request.resource.data.senderAddress is string && request.resource.data.senderAddress.size() <= 128))
+                          && (!('memoUsed' in request.resource.data) || (request.resource.data.memoUsed is string && request.resource.data.memoUsed.size() <= 128))
                         )
                         ||
                         // Case B: Pending Reward / Check-in Request (Requires explicit rewardDay/streakDay or taskId)
@@ -332,6 +384,8 @@ service cloud.firestore {
                         'hashrateTHs',
                         'powerConsumptionW',
                         'efficiencyJTH',
+                        'efficiencyWTH',
+                        'temperatureC',
                         'uptimeSeconds',
                         'startedAt',
                         'todayEstimatedRewardCoin',
@@ -339,9 +393,12 @@ service cloud.firestore {
                         'confirmedRewardCoin',
                         'workerName',
                         'poolLocation',
+                        'poolName',
                         'hardwareProfile',
                         'acceptedShares',
                         'rejectedShares',
+                        'lastSessionId',
+                        'isSimulated',
                         'createdAt',
                         'updatedAt'
                       ])
@@ -370,9 +427,14 @@ service cloud.firestore {
                         'hashrateTHs',
                         'powerConsumptionW',
                         'efficiencyJTH',
+                        'efficiencyWTH',
+                        'temperatureC',
                         'hardwareProfile',
                         'workerName',
                         'poolLocation',
+                        'poolName',
+                        'lastSessionId',
+                        'isSimulated',
                         'updatedAt'
                       ])
                       && request.resource.data.userId == resource.data.userId
@@ -381,11 +443,11 @@ service cloud.firestore {
                       && request.resource.data.hashrateTHs is number
                       && request.resource.data.hashrateTHs >= 0
                       // Reward counters and paid contract planId/activeContractId cannot be modified by client
-                      && request.resource.data.confirmedRewardCoin == resource.data.confirmedRewardCoin
-                      && request.resource.data.todayEstimatedRewardCoin == resource.data.todayEstimatedRewardCoin
-                      && request.resource.data.todayEstimatedRewardUSD == resource.data.todayEstimatedRewardUSD
-                      && request.resource.data.acceptedShares == resource.data.acceptedShares
-                      && request.resource.data.rejectedShares == resource.data.rejectedShares
+                      && (!('confirmedRewardCoin' in request.resource.data) || request.resource.data.confirmedRewardCoin == resource.data.confirmedRewardCoin)
+                      && (!('todayEstimatedRewardCoin' in request.resource.data) || request.resource.data.todayEstimatedRewardCoin == resource.data.todayEstimatedRewardCoin)
+                      && (!('todayEstimatedRewardUSD' in request.resource.data) || request.resource.data.todayEstimatedRewardUSD == resource.data.todayEstimatedRewardUSD)
+                      && (!('acceptedShares' in request.resource.data) || request.resource.data.acceptedShares == resource.data.acceptedShares)
+                      && (!('rejectedShares' in request.resource.data) || request.resource.data.rejectedShares == resource.data.rejectedShares)
                       && (!('planId' in request.resource.data) || request.resource.data.planId == resource.data.planId)
                       && (!('activeContractId' in request.resource.data) || request.resource.data.activeContractId == resource.data.activeContractId)
                       && (!('activeContractName' in request.resource.data) || request.resource.data.activeContractName == resource.data.activeContractName);
@@ -421,6 +483,8 @@ service cloud.firestore {
                         'currentStreak',
                         'lastClaimDate',
                         'lastClaimTimestamp',
+                        'lastClaimTxId',
+                        'totalClaims',
                         'totalClaimedCount',
                         'totalPendingRewardUSD',
                         'claimStatus',
@@ -445,6 +509,8 @@ service cloud.firestore {
                         'currentStreak',
                         'lastClaimDate',
                         'lastClaimTimestamp',
+                        'lastClaimTxId',
+                        'totalClaims',
                         'totalClaimedCount',
                         'totalPendingRewardUSD',
                         'claimStatus',
@@ -475,10 +541,29 @@ service cloud.firestore {
 
         allow delete: if false;
       }
+
+      // =======================================================================
+      // 7b. Server-Only Reward Claim Idempotency Locks: users/{userId}/rewardClaims/{claimKey}
+      //     - Prevents duplicate task bounty or daily streak credits across multiple txIds
+      // =======================================================================
+      match /rewardClaims/{claimKey} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if false;
+      }
     }
 
     // =========================================================================
-    // 8. Server-Only Payment Verification & Replay Protection Collections
+    // 8. Owner-Configured Manual Payment Methods: paymentMethods/{methodId}
+    //    - Public/Authenticated read for displaying enabled deposit channels
+    //    - Strictly server-written via authenticated Admin API (Admin SDK only)
+    // =========================================================================
+    match /paymentMethods/{methodId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 9. Server-Only Payment Verification & Replay Protection Collections
     //    - Written exclusively by the trusted backend / Firebase Admin SDK
     //    - Client users and admins via client SDK can NEVER create, read, or modify
     //      verifiedPayments receipts, paymentReferences locks, or deposit attributions

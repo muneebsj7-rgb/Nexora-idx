@@ -29,6 +29,11 @@ import {
   Trc20VerificationResponse,
   TronContractAndEndpointProbeResponse,
 } from '../../services/adminService';
+import {
+  type ManualPaymentMethodConfig,
+  DEFAULT_PAYMENT_METHODS_CATALOG,
+  buildExplorerTxUrl,
+} from '../../services/paymentMethodService';
 
 export const WalletScreen: React.FC = () => {
   const { user, walletAssets, transactions, isOfflineCache, addToast, openAuthModal, refreshWalletState } = useApp();
@@ -43,10 +48,15 @@ export const WalletScreen: React.FC = () => {
   // Admin state
   const isAuthorizedAdmin = AdminService.isAuthorizedAdmin(user);
   const [adminPanelOpen, setAdminPanelOpen] = useState(true);
-  const [adminQueueTab, setAdminQueueTab] = useState<'DEPOSITS' | 'REWARDS' | 'WITHDRAWALS'>('DEPOSITS');
+  const [adminQueueTab, setAdminQueueTab] = useState<'DEPOSITS' | 'REWARDS' | 'WITHDRAWALS' | 'PAYMENT_METHODS'>('DEPOSITS');
   const [adminPendingDeposits, setAdminPendingDeposits] = useState<PendingRequestItem[]>([]);
   const [adminPendingRewards, setAdminPendingRewards] = useState<PendingRequestItem[]>([]);
   const [adminPendingWithdrawals, setAdminPendingWithdrawals] = useState<PendingRequestItem[]>([]);
+  const [adminPaymentMethods, setAdminPaymentMethods] = useState<ManualPaymentMethodConfig[]>(
+    DEFAULT_PAYMENT_METHODS_CATALOG
+  );
+  const [savingMethodId, setSavingMethodId] = useState<string | null>(null);
+  const [sharedEvmConfirmMap, setSharedEvmConfirmMap] = useState<Record<string, boolean>>({});
   const [loadingPendingRequests, setLoadingPendingRequests] = useState(false);
   const [reconcilingConsole, setReconcilingConsole] = useState(false);
   const [actionInProgressId, setActionInProgressId] = useState<string | null>(null);
@@ -61,19 +71,21 @@ export const WalletScreen: React.FC = () => {
   const totalLockedUSD = walletAssets.reduce((acc, a) => acc + a.lockedBalance * a.usdRate, 0);
   const totalUSD = availableUSD + totalLockedUSD;
 
-  // Load pending requests across all categories if authorized admin
+  // Load pending requests across all categories and configured payment methods if authorized admin
   const loadAdminData = async () => {
     if (!isAuthorizedAdmin) return;
     setLoadingPendingRequests(true);
     try {
-      const [bundle, status] = await Promise.all([
+      const [bundle, status, methods] = await Promise.all([
         AdminService.fetchPendingRequests().catch(() => ({ deposits: [], rewards: [], withdrawals: [] })),
         AdminService.fetchSetupStatus().catch(() => null),
+        AdminService.getAdminPaymentMethods().catch(() => DEFAULT_PAYMENT_METHODS_CATALOG),
       ]);
       setAdminPendingDeposits(bundle.deposits);
       setAdminPendingRewards(bundle.rewards);
       setAdminPendingWithdrawals(bundle.withdrawals);
       if (status) setAdminSetupStatus(status);
+      if (Array.isArray(methods) && methods.length > 0) setAdminPaymentMethods(methods);
     } catch {
       // ignore
     } finally {
@@ -86,6 +98,41 @@ export const WalletScreen: React.FC = () => {
       loadAdminData();
     }
   }, [isAuthorizedAdmin]);
+
+  const handleUpdatePaymentMethodField = (
+    methodId: string,
+    field: keyof ManualPaymentMethodConfig,
+    value: any
+  ) => {
+    setAdminPaymentMethods((prev) =>
+      prev.map((m) => (m.id === methodId ? { ...m, [field]: value } : m))
+    );
+  };
+
+  const handleSavePaymentMethod = async (
+    method: ManualPaymentMethodConfig,
+    overrideEnabled?: boolean
+  ) => {
+    setSavingMethodId(method.id);
+    try {
+      const targetEnabled = overrideEnabled !== undefined ? overrideEnabled : method.enabled;
+      const res = await AdminService.updateAdminPaymentMethod(method.id, {
+        ...method,
+        enabled: targetEnabled,
+        confirmSharedAddressAcrossNetworks: Boolean(sharedEvmConfirmMap[method.id]),
+      });
+      setAdminPaymentMethods(res.paymentMethods);
+      addToast('Payment Method Updated', res.message, 'success');
+    } catch (err: any) {
+      addToast(
+        'Payment Method Error',
+        err?.message || 'Failed to save payment method configuration.',
+        'error'
+      );
+    } finally {
+      setSavingMethodId(null);
+    }
+  };
 
   const handleProbeTronContract = async () => {
     setProbingContract(true);
@@ -140,7 +187,8 @@ export const WalletScreen: React.FC = () => {
     }
   };
 
-  const handleApproveDeposit = async (userId: string, txId: string) => {
+  const handleApproveDeposit = async (deposit: PendingRequestItem) => {
+    const { userId, id: txId } = deposit;
     setActionInProgressId(txId);
     try {
       const res = await AdminService.approveDeposit(userId, txId);
@@ -475,14 +523,14 @@ export const WalletScreen: React.FC = () => {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-sm font-extrabold text-[#F4F7FC]">
-                    Admin Financial Verification & Settlement Desk
+                    Admin Financial Verification &amp; Settlement Desk
                   </h2>
                   <span className="text-[10px] px-2 py-0.5 rounded-full font-mono font-bold bg-[#F3B64B]/20 text-[#F3B64B] border border-[#F3B64B]/40">
                     {user?.email || 'Admin'}
                   </span>
                 </div>
                 <p className="text-[11px] text-[#98A6BA] mt-0.5">
-                  Atomically settle deposits, daily bonus / task claims, and withdrawal payouts with idempotency protection
+                  Configure owner deposit addresses and atomically settle deposits, bonuses, and withdrawals
                 </p>
               </div>
             </div>
@@ -520,7 +568,7 @@ export const WalletScreen: React.FC = () => {
               {/* Architecture & Security Notice */}
               <div className="p-3 rounded-2xl bg-[#0D121C] border border-[#253144] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                 <div className="text-[11px] text-[#98A6BA] leading-relaxed">
-                  <span className="font-semibold text-[#00D6A3]">Security Invariant:</span> Client-side wallet balance writes are prohibited by Firestore security rules (<code className="font-mono text-[#00D6A3]">match /wallet/* &#123; allow write: if false; &#125;</code>). Use the buttons below to execute atomic server-side settlement, or click <strong>Sync &amp; Settle Console Edits</strong> if you manually edited a status in Firebase Console.
+                  <span className="font-semibold text-[#00D6A3]">Security Invariant:</span> Client-side wallet balance writes are prohibited by Firestore security rules (<code className="font-mono text-[#00D6A3]">match /wallet/* &#123; allow write: if false; &#125;</code>). Configure your own receiving addresses in <strong>Owner Payment Addresses</strong>, verify incoming transfers on the blockchain explorer, and approve below.
                 </div>
                 <button
                   onClick={() => setShowSetupDetails(!showSetupDetails)}
@@ -616,7 +664,7 @@ export const WalletScreen: React.FC = () => {
                             </span>
                           </div>
                           <div className="flex justify-between text-[#98A6BA]">
-                            <span>Bytecode & ABI:</span>
+                            <span>Bytecode &amp; ABI:</span>
                             <span className="text-[#00D6A3]">
                               {contractProbeResult.contract.bytecodeLengthHexChars} hex chars • {contractProbeResult.contract.transferEventSignature}
                             </span>
@@ -643,7 +691,7 @@ export const WalletScreen: React.FC = () => {
               <div className="flex items-center gap-2 overflow-x-auto pb-1">
                 <button
                   onClick={() => setAdminQueueTab('DEPOSITS')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                     adminQueueTab === 'DEPOSITS'
                       ? 'bg-[#00D6A3] text-[#080B12]'
                       : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
@@ -656,7 +704,7 @@ export const WalletScreen: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setAdminQueueTab('REWARDS')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                     adminQueueTab === 'REWARDS'
                       ? 'bg-[#00D6A3] text-[#080B12]'
                       : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
@@ -669,7 +717,7 @@ export const WalletScreen: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setAdminQueueTab('WITHDRAWALS')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                     adminQueueTab === 'WITHDRAWALS'
                       ? 'bg-[#00D6A3] text-[#080B12]'
                       : 'bg-[#0D121C] text-[#98A6BA] border border-[#253144] hover:text-[#F4F7FC]'
@@ -680,7 +728,202 @@ export const WalletScreen: React.FC = () => {
                     {pendingWithdrawalsList.length}
                   </span>
                 </button>
+                <button
+                  onClick={() => setAdminQueueTab('PAYMENT_METHODS')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                    adminQueueTab === 'PAYMENT_METHODS'
+                      ? 'bg-[#F3B64B] text-[#080B12]'
+                      : 'bg-[#0D121C] text-[#F3B64B] border border-[#F3B64B]/40 hover:bg-[#F3B64B]/10'
+                  }`}
+                >
+                  <span>Owner Payment Addresses</span>
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                    {adminPaymentMethods.filter((m) => m.enabled && m.receivingAddress).length}/
+                    {adminPaymentMethods.length}
+                  </span>
+                </button>
               </div>
+
+              {/* TAB 4: OWNER PAYMENT ADDRESSES MANAGER */}
+              {adminQueueTab === 'PAYMENT_METHODS' && (
+                <div className="space-y-3">
+                  <div className="p-3 rounded-2xl bg-[#080B12] border border-[#253144] text-[11px] text-[#98A6BA] leading-relaxed">
+                    Configure your own receiving wallet addresses for each cryptocurrency and network below. Any network without a valid receiving address remains <strong className="text-[#F3B64B]">Disabled</strong> and hidden from users. Approved deposits across all assets convert and credit into the user&apos;s primary <strong className="text-[#00D6A3]">USDT</strong> wallet balance.
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3">
+                    {adminPaymentMethods.map((method) => {
+                      const isSaving = savingMethodId === method.id;
+                      const isEvm = method.networkCode === 'ERC20' || method.networkCode === 'BEP20';
+                      return (
+                        <div
+                          key={method.id}
+                          className="p-3.5 rounded-2xl bg-[#0D121C] border border-[#253144] space-y-3"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5">
+                              <CoinIcon symbol={method.symbol} size="sm" />
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-extrabold text-[#F4F7FC]">
+                                    {method.symbol} — {method.network}
+                                  </span>
+                                  <span
+                                    className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold border ${
+                                      method.settlementEnabled === false
+                                        ? 'bg-[#FF4D4D]/15 text-[#FF4D4D] border-[#FF4D4D]/40'
+                                        : method.enabled && method.receivingAddress
+                                        ? 'bg-[#00D6A3]/15 text-[#00D6A3] border-[#00D6A3]/40'
+                                        : 'bg-[#182232] text-[#98A6BA] border-[#253144]'
+                                    }`}
+                                  >
+                                    {method.settlementEnabled === false
+                                      ? 'SETTLEMENT DISABLED (REQUIRES VERIFIER & RATE FEED)'
+                                      : method.enabled && method.receivingAddress
+                                      ? 'ENABLED'
+                                      : 'DISABLED'}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] font-mono text-[#98A6BA]">
+                                  ID: {method.id} • Network Code: {method.networkCode} • Required Confirmations: {method.confirmationsRequired ?? 1}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <label
+                                className={`flex items-center gap-1.5 text-xs ${
+                                  method.settlementEnabled === false
+                                    ? 'text-[#98A6BA] opacity-50 cursor-not-allowed'
+                                    : 'text-[#F4F7FC] cursor-pointer'
+                                }`}
+                                title={
+                                  method.settlementEnabled === false
+                                    ? 'Non-USDT settlement is disabled until an independent chain verifier and live server exchange-rate feed are active.'
+                                    : undefined
+                                }
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={method.settlementEnabled === false}
+                                  checked={Boolean(method.enabled && method.settlementEnabled !== false)}
+                                  onChange={(e) =>
+                                    handleUpdatePaymentMethodField(method.id, 'enabled', e.target.checked)
+                                  }
+                                  className="rounded border-[#253144] bg-[#080B12] text-[#00D6A3] focus:ring-0 disabled:opacity-40"
+                                />
+                                <span>Enable for Users</span>
+                              </label>
+                              <button
+                                type="button"
+                                disabled={isSaving}
+                                onClick={() => handleSavePaymentMethod(method)}
+                                className="py-1.5 px-3 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs transition-all disabled:opacity-50"
+                              >
+                                {isSaving ? 'Saving...' : 'Save Method'}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                            <div className="sm:col-span-2">
+                              <label className="block text-[10px] font-mono uppercase text-[#98A6BA] mb-1">
+                                Owner Receiving Wallet Address ({method.networkCode})
+                              </label>
+                              <input
+                                type="text"
+                                placeholder={`Enter your ${method.symbol} (${method.networkCode}) receiving address...`}
+                                value={method.receivingAddress}
+                                onChange={(e) =>
+                                  handleUpdatePaymentMethodField(
+                                    method.id,
+                                    'receivingAddress',
+                                    e.target.value
+                                  )
+                                }
+                                className="w-full bg-[#080B12] border border-[#253144] rounded-xl py-1.5 px-2.5 text-xs text-[#F4F7FC] font-mono focus:outline-none focus:border-[#00D6A3]"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-mono uppercase text-[#98A6BA] mb-1">
+                                Minimum Deposit ({method.symbol})
+                              </label>
+                              <input
+                                type="number"
+                                step="any"
+                                min="0.00001"
+                                value={method.minDeposit}
+                                onChange={(e) =>
+                                  handleUpdatePaymentMethodField(
+                                    method.id,
+                                    'minDeposit',
+                                    parseFloat(e.target.value) || method.minDeposit
+                                  )
+                                }
+                                className="w-full bg-[#080B12] border border-[#253144] rounded-xl py-1.5 px-2.5 text-xs text-[#F4F7FC] font-mono focus:outline-none focus:border-[#00D6A3]"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-center">
+                            <label className="flex items-center gap-1.5 text-[11px] text-[#98A6BA] cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(method.memoRequired)}
+                                onChange={(e) =>
+                                  handleUpdatePaymentMethodField(
+                                    method.id,
+                                    'memoRequired',
+                                    e.target.checked
+                                  )
+                                }
+                                className="rounded border-[#253144] bg-[#080B12]"
+                              />
+                              <span>Require Memo / Destination Tag</span>
+                            </label>
+
+                            {method.memoRequired && (
+                              <input
+                                type="text"
+                                placeholder="Owner Memo / Destination Tag value..."
+                                value={method.memoValue || ''}
+                                onChange={(e) =>
+                                  handleUpdatePaymentMethodField(
+                                    method.id,
+                                    'memoValue',
+                                    e.target.value
+                                  )
+                                }
+                                className="sm:col-span-2 bg-[#080B12] border border-[#F3B64B]/40 rounded-xl py-1.5 px-2.5 text-xs text-[#F4F7FC] font-mono focus:outline-none focus:border-[#F3B64B]"
+                              />
+                            )}
+
+                            {isEvm && !method.memoRequired && (
+                              <label className="sm:col-span-2 flex items-center gap-1.5 text-[10px] text-[#98A6BA] cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(sharedEvmConfirmMap[method.id])}
+                                  onChange={(e) =>
+                                    setSharedEvmConfirmMap((prev) => ({
+                                      ...prev,
+                                      [method.id]: e.target.checked,
+                                    }))
+                                  }
+                                  className="rounded border-[#253144] bg-[#080B12]"
+                                />
+                                <span>
+                                  Confirm shared EVM wallet address across ERC20 &amp; BEP20
+                                </span>
+                              </label>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* TAB 1: DEPOSITS */}
               {adminQueueTab === 'DEPOSITS' && (
@@ -694,9 +937,17 @@ export const WalletScreen: React.FC = () => {
                       const preview = verificationPreviews[deposit.id];
                       const isDryRunning = verifyingDepositId === `${deposit.id}:dry`;
                       const isRecordingProof = verifyingDepositId === `${deposit.id}:record`;
-                      const isTestnetCreditBlocked =
-                        deposit.asset === 'USDT' &&
-                        Boolean(adminSetupStatus?.tronVerifier?.testnetCreditBlocked);
+                      const matchedMethod = adminPaymentMethods.find(
+                        (m) =>
+                          m.id === deposit.paymentMethodId ||
+                          (m.symbol.toUpperCase() === deposit.asset.toUpperCase() &&
+                            deposit.network &&
+                            m.network.toLowerCase() === deposit.network.toLowerCase())
+                      );
+                      const explorerUrl = deposit.txHash
+                        ? buildExplorerTxUrl(matchedMethod, deposit.txHash)
+                        : null;
+
                       return (
                         <div
                           key={deposit.id}
@@ -732,7 +983,38 @@ export const WalletScreen: React.FC = () => {
                                     <Copy className="w-3 h-3" />
                                   </button>
                                 )}
+                                {explorerUrl && (
+                                  <a
+                                    href={explorerUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[#00D6A3] hover:underline font-bold"
+                                  >
+                                    [View on Explorer]
+                                  </a>
+                                )}
                               </div>
+                              {(deposit.recipientAddress || deposit.senderAddress || deposit.memoUsed) && (
+                                <div className="text-[10px] font-mono text-[#98A6BA] flex items-center gap-3 flex-wrap pt-0.5">
+                                  {deposit.recipientAddress && (
+                                    <span>
+                                      To Owner Wallet:{' '}
+                                      <strong className="text-[#00D6A3]">{deposit.recipientAddress}</strong>
+                                    </span>
+                                  )}
+                                  {deposit.senderAddress && (
+                                    <span>
+                                      From Sender:{' '}
+                                      <strong className="text-[#F4F7FC]">{deposit.senderAddress}</strong>
+                                    </span>
+                                  )}
+                                  {deposit.memoUsed && (
+                                    <span>
+                                      Memo: <strong className="text-[#F3B64B]">{deposit.memoUsed}</strong>
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                             </div>
 
                             <div className="flex items-center gap-2 flex-wrap shrink-0">
@@ -742,19 +1024,19 @@ export const WalletScreen: React.FC = () => {
                                     onClick={() => handleVerifyTrc20Deposit(deposit.userId, deposit.id, true)}
                                     disabled={Boolean(verifyingDepositId) || actionInProgressId === deposit.id}
                                     className="py-1.5 px-2.5 rounded-xl bg-[#25B9F3]/15 hover:bg-[#25B9F3]/25 text-[#25B9F3] border border-[#25B9F3]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
-                                    title="Read-only TronGrid check (zero database writes, zero wallet credit)"
+                                    title="Read-only TronGrid check (zero database writes)"
                                   >
                                     <RefreshCw className={`w-3 h-3 ${isDryRunning ? 'animate-spin' : ''}`} />
-                                    <span>{isDryRunning ? 'Checking...' : 'Dry-Run Check'}</span>
+                                    <span>{isDryRunning ? 'Checking...' : 'TRON Dry-Run'}</span>
                                   </button>
                                   <button
                                     onClick={() => handleVerifyTrc20Deposit(deposit.userId, deposit.id, false)}
                                     disabled={Boolean(verifyingDepositId) || actionInProgressId === deposit.id}
                                     className="py-1.5 px-2.5 rounded-xl bg-[#F3B64B]/15 hover:bg-[#F3B64B]/25 text-[#F3B64B] border border-[#F3B64B]/30 font-semibold text-xs transition-colors disabled:opacity-50 flex items-center gap-1"
-                                    title="Verify on TronGrid and record verifiedPayments receipt without crediting wallet"
+                                    title="Record verifiedPayments receipt from TronGrid without crediting wallet"
                                   >
                                     <ShieldCheck className={`w-3.5 h-3.5 ${isRecordingProof ? 'animate-pulse' : ''}`} />
-                                    <span>{isRecordingProof ? 'Recording...' : 'Verify Proof Only'}</span>
+                                    <span>{isRecordingProof ? 'Recording...' : 'Record TRON Proof'}</span>
                                   </button>
                                 </>
                               )}
@@ -767,13 +1049,9 @@ export const WalletScreen: React.FC = () => {
                                 <span>Reject</span>
                               </button>
                               <button
-                                onClick={() => handleApproveDeposit(deposit.userId, deposit.id)}
-                                disabled={actionInProgressId === deposit.id || isTestnetCreditBlocked}
-                                title={
-                                  isTestnetCreditBlocked
-                                    ? 'Testnet wallet credit is blocked to protect shared Firestore user balances. Use Dry-Run Check or Verify Proof Only.'
-                                    : 'Settle verified deposit and credit wallet balance'
-                                }
+                                onClick={() => handleApproveDeposit(deposit)}
+                                disabled={actionInProgressId === deposit.id}
+                                title="Settle and credit primary USDT balance using the server-verified payment proof receipt and authoritative paymentMethods record"
                                 className="py-1.5 px-3.5 rounded-xl bg-[#00D6A3] hover:bg-[#19C784] text-[#080B12] font-bold text-xs shadow-md shadow-[#00D6A3]/20 transition-all active:scale-95 disabled:opacity-40 flex items-center gap-1.5"
                               >
                                 {actionInProgressId === deposit.id ? (
@@ -781,15 +1059,10 @@ export const WalletScreen: React.FC = () => {
                                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                                     <span>Crediting...</span>
                                   </>
-                                ) : isTestnetCreditBlocked ? (
-                                  <>
-                                    <ShieldCheck className="w-3.5 h-3.5" />
-                                    <span>Testnet Credit Blocked</span>
-                                  </>
                                 ) : (
                                   <>
                                     <Check className="w-3.5 h-3.5 stroke-[3px]" />
-                                    <span>Approve &amp; Credit Balance</span>
+                                    <span>Approve &amp; Credit USDT</span>
                                   </>
                                 )}
                               </button>
@@ -1461,10 +1734,41 @@ export const WalletScreen: React.FC = () => {
                   </div>
                 )}
 
+                {selectedTx.nativeAsset && selectedTx.nativeAsset !== selectedTx.creditedAsset && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Conversion Rate:</span>
+                    <span className="font-mono text-[#25B9F3]">
+                      {selectedTx.nativeAmount} {selectedTx.nativeAsset} @ ${selectedTx.exchangeRateUSD?.toLocaleString()}{' '}
+                      = {selectedTx.creditedAmount} {selectedTx.creditedAsset || 'USDT'}
+                    </span>
+                  </div>
+                )}
+
                 <div className="flex justify-between py-1 border-b border-[#253144]">
                   <span className="text-[#98A6BA]">Network:</span>
                   <span className="text-[#F4F7FC]">{selectedTx.network || 'Internal Stratum Ledger'}</span>
                 </div>
+
+                {selectedTx.recipientAddress && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Owner Receiving Address:</span>
+                    <span className="font-mono text-[#00D6A3] truncate max-w-[200px]">{selectedTx.recipientAddress}</span>
+                  </div>
+                )}
+
+                {selectedTx.senderAddress && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Sender Address:</span>
+                    <span className="font-mono text-[#98A6BA] truncate max-w-[200px]">{selectedTx.senderAddress}</span>
+                  </div>
+                )}
+
+                {selectedTx.memoUsed && (
+                  <div className="flex justify-between py-1 border-b border-[#253144]">
+                    <span className="text-[#98A6BA]">Memo / Tag:</span>
+                    <span className="font-mono text-[#F3B64B] truncate max-w-[200px]">{selectedTx.memoUsed}</span>
+                  </div>
+                )}
 
                 {selectedTx.toAddress && (
                   <div className="flex justify-between py-1 border-b border-[#253144]">

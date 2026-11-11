@@ -276,16 +276,51 @@ function isAuthorizedAdminEmail(email?: string): boolean {
   return ADMIN_EMAILS.includes(email.toLowerCase());
 }
 
-function requireCallableAdmin(context: functions.https.CallableContext): { uid: string; email: string } {
-  if (!context.auth) {
+export function evaluateCallableAdminAuthorization(input: {
+  uid?: string;
+  email?: string;
+  emailVerified?: boolean;
+  customAdminClaim?: boolean;
+  hasAdminDoc?: boolean;
+}): boolean {
+  if (!input || !input.uid || input.emailVerified !== true) {
+    return false;
+  }
+  const cleanEmail = String(input.email || '').trim().toLowerCase();
+  const isAllowlistedEmail = Boolean(cleanEmail) && ADMIN_EMAILS.includes(cleanEmail);
+  return Boolean(input.customAdminClaim === true || input.hasAdminDoc === true || isAllowlistedEmail);
+}
+
+async function requireCallableAdmin(
+  context: functions.https.CallableContext
+): Promise<{ uid: string; email: string }> {
+  if (!context.auth || !context.auth.uid) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const callerEmail = context.auth.token.email;
+  const callerEmail = String(context.auth.token.email || '').toLowerCase();
   const isEmailVerified = context.auth.token.email_verified === true;
   const isCustomAdmin = context.auth.token.admin === true;
+  let hasAdminDoc = false;
 
-  if (!isEmailVerified || (!isCustomAdmin && !isAuthorizedAdminEmail(callerEmail))) {
+  if (isEmailVerified && !isCustomAdmin && !isAuthorizedAdminEmail(callerEmail)) {
+    try {
+      const adminSnap = await db.doc(`admins/${context.auth.uid}`).get();
+      hasAdminDoc = Boolean(adminSnap && adminSnap.exists);
+    } catch {
+      hasAdminDoc = false;
+    }
+  }
+
+  const isAuthorized = evaluateCallableAdminAuthorization({
+    uid: context.auth.uid,
+    email: callerEmail,
+    emailVerified: isEmailVerified,
+    customAdminClaim: isCustomAdmin,
+    hasAdminDoc,
+  });
+
+  if (!isAuthorized) {
     throw new functions.https.HttpsError(
       'permission-denied',
       'Caller is not an authorized administrator with a verified email.'
@@ -294,7 +329,7 @@ function requireCallableAdmin(context: functions.https.CallableContext): { uid: 
 
   return {
     uid: context.auth.uid,
-    email: callerEmail || context.auth.uid,
+    email: context.auth.token.email || context.auth.uid,
   };
 }
 
@@ -879,7 +914,7 @@ export const onDepositStatusChanged = onTransactionStatusChanged;
  * 2. CALLABLE HTTPS FUNCTION: Approve verified deposit
  */
 export const approveDeposit = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
-  const admin = requireCallableAdmin(context);
+  const admin = await requireCallableAdmin(context);
   const { userId, txId, note, allowManualCompletedStatus = true } = data || {};
   if (!userId || !txId) {
     throw new functions.https.HttpsError('invalid-argument', 'userId and txId are required.');
@@ -995,9 +1030,10 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
     const currentLocked = round8(Number(walletData.lockedBalance) || 0);
     const newBalance = round8(currentBalance + amount);
     const settlementId = `settle_${txId}`;
+    // CRITICAL-02: Never derive priceUSD from client-supplied txData.amountUSD
     const resolvedPriceUSD =
-      Number(txData.amountUSD) > 0 && amount > 0
-        ? Number((Number(txData.amountUSD) / amount).toFixed(4))
+      assetSymbol === 'USDT'
+        ? 1.0
         : Number(walletData.priceUSD || assetRule.defaultUsdRate);
     const resolvedChange24h =
       walletData.change24h !== undefined ? Number(walletData.change24h) : 0;
@@ -1089,7 +1125,7 @@ export const approveDeposit = functions.https.onCall(async (data: any, context: 
  * 3. CALLABLE HTTPS FUNCTION: Reject invalid deposit
  */
 export const rejectDeposit = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
-  const admin = requireCallableAdmin(context);
+  const admin = await requireCallableAdmin(context);
   const { userId, txId, reason } = data;
   if (!userId || !txId) {
     throw new functions.https.HttpsError('invalid-argument', 'userId and txId are required.');
@@ -1134,7 +1170,7 @@ export const rejectDeposit = functions.https.onCall(async (data: any, context: f
  * 4. CALLABLE HTTPS FUNCTION: Approve daily bonus / task reward claim
  */
 export const approveReward = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
-  const admin = requireCallableAdmin(context);
+  const admin = await requireCallableAdmin(context);
   const { userId, txId, note } = data;
   if (!userId || !txId) {
     throw new functions.https.HttpsError('invalid-argument', 'userId and txId are required.');
@@ -1335,7 +1371,7 @@ export const approveReward = functions.https.onCall(async (data: any, context: f
  * 5. CALLABLE HTTPS FUNCTION: Approve & Settle Withdrawal
  */
 export const approveWithdrawal = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
-  const admin = requireCallableAdmin(context);
+  const admin = await requireCallableAdmin(context);
   const { userId, txId, payoutTxHash, note } = data;
   if (!userId || !txId) {
     throw new functions.https.HttpsError('invalid-argument', 'userId and txId are required.');
@@ -1469,7 +1505,7 @@ export const approveWithdrawal = functions.https.onCall(async (data: any, contex
  * 6. CALLABLE HTTPS FUNCTION: Reject Withdrawal & Refund Escrow
  */
 export const rejectWithdrawal = functions.https.onCall(async (data: any, context: functions.https.CallableContext) => {
-  const admin = requireCallableAdmin(context);
+  const admin = await requireCallableAdmin(context);
   const { userId, txId, reason } = data;
   if (!userId || !txId) {
     throw new functions.https.HttpsError('invalid-argument', 'userId and txId are required.');

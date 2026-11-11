@@ -308,6 +308,7 @@ export class DailyRewardsFirestoreService {
     let docExists = false;
     let existingStreak = currentStreakRecord?.currentStreak || 0;
     let existingTotalClaims = currentStreakRecord?.totalClaims || 0;
+    let existingTotalPendingRewardUSD = 0;
     let existingLastClaimDate = currentStreakRecord?.lastClaimDate || '';
     let existingHistory: DailyStreakClaimItem[] = currentStreakRecord?.claimHistory || [];
 
@@ -317,7 +318,14 @@ export class DailyRewardsFirestoreService {
         docExists = true;
         const data = snap.data();
         if (typeof data.currentStreak === 'number') existingStreak = data.currentStreak;
-        if (typeof data.totalClaims === 'number') existingTotalClaims = data.totalClaims;
+        if (typeof data.totalClaims === 'number') {
+          existingTotalClaims = data.totalClaims;
+        } else if (typeof data.totalClaimedCount === 'number') {
+          existingTotalClaims = data.totalClaimedCount;
+        }
+        if (typeof data.totalPendingRewardUSD === 'number') {
+          existingTotalPendingRewardUSD = data.totalPendingRewardUSD;
+        }
         if (typeof data.lastClaimDate === 'string') existingLastClaimDate = data.lastClaimDate;
         if (Array.isArray(data.claimHistory)) existingHistory = data.claimHistory;
       }
@@ -374,6 +382,7 @@ export class DailyRewardsFirestoreService {
     };
 
     const nextTotalClaims = existingTotalClaims + 1;
+    const nextTotalPendingRewardUSD = Number((existingTotalPendingRewardUSD + rewardUSD).toFixed(2));
     const updatedHistory = [...existingHistory, newClaimItem].slice(-30);
 
     const updatedStreakRecord: DailyStreakRecord = {
@@ -388,13 +397,16 @@ export class DailyRewardsFirestoreService {
       updatedAt: nowIso,
     };
 
-    // 4. Construct Firestore payload adhering strictly to allowlists
+    // 4. Construct Firestore payload adhering strictly to allowlists in firestore.rules
     const streakPayload: Record<string, any> = {
       userId: uid,
       currentStreak: nextStreak,
       lastClaimDate: todayUTC,
       lastClaimTimestamp: nowIso,
+      lastClaimTxId: txId,
       totalClaims: nextTotalClaims,
+      totalClaimedCount: nextTotalClaims,
+      totalPendingRewardUSD: nextTotalPendingRewardUSD,
       claimStatus: 'PENDING_VERIFICATION',
       claimHistory: updatedHistory,
       updatedAt: serverTimestamp(),

@@ -30,12 +30,49 @@ class InMemoryFirestore implements FirestoreLike {
   private store = new Map<string, Record<string, any>>();
   private lockQueue: Promise<void> = Promise.resolve();
 
-  doc(path: string): DocRefLike {
+  doc(path: string): DocRefLike & {
+    get: () => Promise<{ exists: boolean; id: string; data: () => Record<string, any> | undefined }>;
+    set: (data: Record<string, any>, options?: { merge?: boolean }) => Promise<void>;
+  } {
     const cleanPath = path.replace(/^\/+/, '');
+    const id = cleanPath.split('/').pop() || '';
     return {
-      id: cleanPath.split('/').pop() || '',
+      id,
       path: cleanPath,
+      get: async () => {
+        const raw = this.store.get(cleanPath);
+        return {
+          exists: raw !== undefined,
+          id,
+          data: () => (raw !== undefined ? structuredClone(raw) : undefined),
+        };
+      },
+      set: async (data: Record<string, any>, options?: { merge?: boolean }) => {
+        const existing = this.store.get(cleanPath);
+        if (options?.merge && existing) {
+          this.store.set(cleanPath, { ...structuredClone(existing), ...structuredClone(data) });
+        } else {
+          this.store.set(cleanPath, structuredClone(data));
+        }
+      },
     };
+  }
+
+  listCollectionDocs(collectionPath: string) {
+    const prefix = `${collectionPath.replace(/^\/+|\/+$/g, '')}/`;
+    const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
+    for (const [key, val] of this.store.entries()) {
+      if (key.startsWith(prefix)) {
+        const rest = key.slice(prefix.length);
+        if (!rest.includes('/')) {
+          docs.push({
+            id: rest,
+            data: () => structuredClone(val),
+          });
+        }
+      }
+    }
+    return docs;
   }
 
   seed(path: string, data: Record<string, any>) {
@@ -2728,12 +2765,1371 @@ async function runTests() {
     console.log(
       '✓ Test 19 Passed: Phase 5.4 USDT TRC20 TronGrid Testnet Verifier verified across Base58Check/Hex41 integrity, live Nile contract & endpoint probe, 6-decimal baseUnits, zero-write dryRun, proof-only, testnet credit block, and replay protection'
     );
+
+    // ---------------------------------------------------------------------------
+    // Test 20: Phase 6.1 / 6.3 Owner-Configured Manual Crypto Payment System, Address Validation, BTC->USDT Conversion & Reward Claim Idempotency
+    // ---------------------------------------------------------------------------
+    const {
+      DEFAULT_PAYMENT_METHODS_CATALOG,
+      validatePaymentMethodAddress,
+      validateCrossNetworkAddressReuse,
+      buildExplorerTxUrl,
+      validateTrustedServerRateQuote,
+      decimalToScaledBigInt,
+      scaledBigIntToDecimal,
+      addCryptoBalancesBigInt,
+    } = await import('../src/services/paymentMethodService.ts');
+    const {
+      setExchangeRateProviderForTesting,
+      evaluateAdminAuthorizationPolicy,
+    } = await import('../server.ts');
+    const { generateQrMatrix } = await import('../src/components/ui/AddressQrCode.tsx');
+
+    const mockFirestoreFactory = () => ({
+      doc: (p: string) => db.doc(p),
+      runTransaction: (fn: any) => db.runTransaction(fn),
+      collection: (colPath: string) => ({
+        get: async () => ({
+          docs: db.listCollectionDocs(colPath),
+        }),
+        limit: () => ({
+          get: async () => ({
+            docs: db.listCollectionDocs(colPath),
+          }),
+        }),
+      }),
+    });
+
+    // Wire collection('paymentMethods').get() on the mock Firestore provider
+    setFirestoreProviderForTesting(mockFirestoreFactory);
+
+    // 20.1 Catalog defaults: all 7 methods ship with receivingAddress === '' and enabled === false;
+    // non-USDT methods ship with settlementEnabled === false
+    assert.equal(DEFAULT_PAYMENT_METHODS_CATALOG.length, 7, 'Default catalog must define 7 payment methods');
+    for (const item of DEFAULT_PAYMENT_METHODS_CATALOG) {
+      assert.equal(item.receivingAddress, '', `Default catalog method ${item.id} must have empty receivingAddress`);
+      assert.equal(item.enabled, false, `Default catalog method ${item.id} must default to enabled: false`);
+      if (item.symbol === 'USDT') {
+        assert.equal(item.settlementEnabled, true, `USDT catalog method ${item.id} has settlementEnabled: true`);
+      } else {
+        assert.equal(
+          item.settlementEnabled,
+          false,
+          `Non-USDT catalog method ${item.id} must default to settlementEnabled: false`
+        );
+      }
+    }
+
+    // Public GET /api/payment-methods returns [] before owner configures any addresses
+    const publicMethodsInitialRes = await fetch(`${baseUrl}/api/payment-methods`);
+    assert.equal(publicMethodsInitialRes.status, 200);
+    const publicMethodsInitialBody = await publicMethodsInitialRes.json();
+    assert.equal(publicMethodsInitialBody.configuredCount, 0, 'Zero methods must be exposed before owner configuration');
+    assert.equal(publicMethodsInitialBody.paymentMethods.length, 0);
+
+    // 20.2 Reject enabling a payment method with empty address, sample address, or Nile USDT contract address
+    const enableEmptyRes = await fetch(`${baseUrl}/api/payment-methods`);
+    assert.equal(enableEmptyRes.status, 200);
+    const putEmptyRes = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_trc20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: '',
+        enabled: true,
+        minDeposit: 10,
+      }),
+    });
+    assert.equal(putEmptyRes.status, 400, 'Enabling payment method with empty receivingAddress must return 400');
+
+    const enableSampleRes = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_trc20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: 'TQn9Y2khEsLJW1ChVWFMSMeSTow5KcbLSE', // known Tron sample address
+        enabled: true,
+        minDeposit: 10,
+      }),
+    });
+    assert.equal(enableSampleRes.status, 400, 'Known sample/demo address must be rejected');
+
+    const enableContractAddrRes = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_trc20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf', // Nile USDT contract address
+        enabled: true,
+        minDeposit: 10,
+      }),
+    });
+    assert.equal(enableContractAddrRes.status, 400, 'USDT token contract address must be rejected as a receiving wallet');
+
+    // 20.3 Configure valid owner TRC20 receiving address via Admin API, and verify BTC is blocked from enabling by default
+    const validOwnerTrc20Address = platformUserDepositAddr.base58;
+    const saveTrc20Res = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_trc20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: validOwnerTrc20Address,
+        enabled: true,
+        minDeposit: 10,
+        confirmationsRequired: 19,
+        instructions: 'Send only USDT (TRC20) to this owner wallet.',
+      }),
+    });
+    assert.equal(saveTrc20Res.status, 200, 'Valid owner TRC20 receiving address must save with 200');
+
+    const validOwnerBtcAddress = 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq';
+    const enableBtcDefaultBlockedRes = await fetch(`${baseUrl}/api/admin/payment-methods/btc_native`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: validOwnerBtcAddress,
+        enabled: true,
+        minDeposit: 0.0005,
+        confirmationsRequired: 2,
+      }),
+    });
+    assert.equal(
+      enableBtcDefaultBlockedRes.status,
+      400,
+      'Non-USDT (BTC) method must be blocked from enabling for real-money settlement by default'
+    );
+
+    // Save BTC address while keeping enabled: false (safe owner pre-configuration)
+    const saveBtcDisabledRes = await fetch(`${baseUrl}/api/admin/payment-methods/btc_native`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: validOwnerBtcAddress,
+        enabled: false,
+        minDeposit: 0.0005,
+        confirmationsRequired: 2,
+      }),
+    });
+    assert.equal(saveBtcDisabledRes.status, 200, 'Saving owner BTC address with enabled: false must return 200');
+
+    // Verify public GET /api/payment-methods exposes ONLY the 1 enabled USDT method (not disabled BTC)
+    const publicMethodsAfterRes = await fetch(`${baseUrl}/api/payment-methods`);
+    const publicMethodsAfterBody = await publicMethodsAfterRes.json();
+    assert.equal(publicMethodsAfterBody.configuredCount, 1, 'Public endpoint must expose only enabled + settlementEnabled methods');
+    assert.equal(publicMethodsAfterBody.paymentMethods[0].id, 'usdt_trc20');
+
+    // 20.4 Cross-network EVM address reuse guard (ERC20 vs BEP20)
+    const evmOwnerAddr = '0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5';
+    const saveErc20Res = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_erc20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: evmOwnerAddr,
+        enabled: true,
+        minDeposit: 20,
+      }),
+    });
+    assert.equal(saveErc20Res.status, 200);
+
+    const saveBep20WithoutConfirmRes = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_bep20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: evmOwnerAddr,
+        enabled: true,
+        minDeposit: 10,
+      }),
+    });
+    assert.equal(
+      saveBep20WithoutConfirmRes.status,
+      400,
+      'Reusing an ERC20 address on BEP20 without confirmSharedAddressAcrossNetworks must return 400'
+    );
+
+    const saveBep20WithConfirmRes = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_bep20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: evmOwnerAddr,
+        enabled: true,
+        minDeposit: 10,
+        confirmSharedAddressAcrossNetworks: true,
+      }),
+    });
+    assert.equal(saveBep20WithConfirmRes.status, 200, 'Explicitly confirmed EVM cross-network address reuse must succeed');
+
+    // 20.5 Deterministic QR code generation from owner address
+    const qrMatrix = generateQrMatrix(validOwnerTrc20Address);
+    assert.ok(qrMatrix.length >= 21, 'Generated QR code matrix must be at least 21x21 modules');
+    assert.equal(qrMatrix.length, qrMatrix[0].length, 'Generated QR code matrix must be square');
+    assert.match(
+      buildExplorerTxUrl('TRC20', 'a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff'),
+      /tronscan\.org/i
+    );
+
+    // 20.6 Authoritative TRC20 deposit settlement (requires TRONGRID_INDEXER verifiedPayments receipt + paymentMethods/usdt_trc20 binding)
+    const manualUser = 'user_manual_deposit_001';
+    db.seed(`users/${manualUser}/wallet/USDT`, {
+      symbol: 'USDT',
+      name: 'Tether USD',
+      balance: 50,
+      lockedBalance: 0,
+      priceUSD: 1,
+      change24h: 0.01,
+    });
+
+    const manualUsdtTxHash = 'c0ffee11223344556677889900aabbccddeeff00112233445566778899aabbcc';
+    db.seed(`users/${manualUser}/transactions/TX-MANUAL-USDT-1`, {
+      id: 'TX-MANUAL-USDT-1',
+      userId: manualUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 120,
+      amountUSD: 120,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: manualUsdtTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    // Seed independent TRONGRID_INDEXER receipt matching paymentMethods/usdt_trc20
+    db.seed(`verifiedPayments/txhash_${manualUsdtTxHash}`, {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: manualUsdtTxHash,
+      network: 'TRC20',
+      tronNetwork: 'mainnet',
+      recipientAddress: validOwnerTrc20Address,
+      expectedTreasuryAddress: validOwnerTrc20Address,
+      recipientVerified: true,
+      userId: manualUser,
+      txId: 'TX-MANUAL-USDT-1',
+      asset: 'USDT',
+      amount: 120,
+      rawAmountBaseUnits: '120000000',
+      txStatus: 'SUCCESS',
+      confirmations: 25,
+      requiredConfirmations: 19,
+      solidified: true,
+      verifiedAt: new Date().toISOString(),
+    });
+
+    const approveManualUsdtRes = await fetch(`${baseUrl}/api/admin/approve-deposit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        userId: manualUser,
+        txId: 'TX-MANUAL-USDT-1',
+      }),
+    });
+    assert.equal(approveManualUsdtRes.status, 200, 'Verified TRC20 USDT deposit bound to paymentMethods/usdt_trc20 must approve with 200');
+    assert.equal(db.peek(`users/${manualUser}/wallet/USDT`)?.balance, 170, 'USDT balance must increase from 50 to 170');
+
+    // 20.7 Per-task / per-day reward claim idempotency lock (users/{uid}/rewardClaims/{claimKey})
+    db.seed(`users/${manualUser}/transactions/TX-REWARD-TASK-1A`, {
+      id: 'TX-REWARD-TASK-1A',
+      userId: manualUser,
+      type: 'TASK_REWARD',
+      asset: 'USDT',
+      amount: 1.5,
+      amountUSD: 1.5,
+      taskId: 'task_verify_email',
+      status: 'PENDING_REVIEW',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`users/${manualUser}/transactions/TX-REWARD-TASK-1B`, {
+      id: 'TX-REWARD-TASK-1B',
+      userId: manualUser,
+      type: 'TASK_REWARD',
+      asset: 'USDT',
+      amount: 1.5,
+      amountUSD: 1.5,
+      taskId: 'task_verify_email', // Duplicate submission for the exact same taskId!
+      status: 'PENDING_REVIEW',
+      walletCredited: false,
+      walletSettled: false,
+    });
+
+    const reward1ARes = await settleRewardApproval(db, {
+      userId: manualUser,
+      txId: 'TX-REWARD-TASK-1A',
+      admin: adminActor,
+    });
+    assert.equal(reward1ARes.alreadyProcessed, false);
+    assert.equal(db.peek(`users/${manualUser}/wallet/USDT`)?.balance, 171.5);
+    assert.ok(
+      db.peek(`users/${manualUser}/rewardClaims/task_task_verify_email`),
+      'Deterministic rewardClaims lock document must be written on first task approval'
+    );
+
+    await assert.rejects(
+      () =>
+        settleRewardApproval(db, {
+          userId: manualUser,
+          txId: 'TX-REWARD-TASK-1B',
+          admin: adminActor,
+        }),
+      /Duplicate reward claim/i,
+      'Second TASK_REWARD transaction with the same taskId must be blocked by rewardClaims/{claimKey}'
+    );
+    assert.equal(
+      db.peek(`users/${manualUser}/wallet/USDT`)?.balance,
+      171.5,
+      'Blocked duplicate task reward must not increment wallet balance'
+    );
+
+    console.log(
+      '✓ Test 20 Passed: Phase 6.1/6.3 Owner-Configured Payment Methods, non-USDT default settlement lock, cross-network guard, QR matrix, and rewardClaims idempotency verified'
+    );
+
+    // ---------------------------------------------------------------------------
+    // Test 21: Phase 6.3 — 18 REQUIRED ADVERSARIAL SECURITY REMEDIATION TESTS
+    // ---------------------------------------------------------------------------
+    console.log('\n=== EXECUTING PHASE 6.3: 18 ADVERSARIAL SECURITY REMEDIATION TESTS ===');
+
+    const advUser = 'user_phase63_adversarial';
+    db.seed(`users/${advUser}/wallet/USDT`, {
+      symbol: 'USDT',
+      name: 'Tether USD',
+      balance: 200,
+      lockedBalance: 0,
+      priceUSD: 1,
+      change24h: 0.01,
+    });
+
+    // Ensure authoritative usdt_trc20 payment method is configured in Firestore
+    db.seed('paymentMethods/usdt_trc20', {
+      id: 'usdt_trc20',
+      symbol: 'USDT',
+      name: 'Tether USD',
+      network: 'TRC20 (TRON)',
+      networkCode: 'TRC20',
+      receivingAddress: validOwnerTrc20Address,
+      memoRequired: false,
+      memoValue: '',
+      minDeposit: 10,
+      feeNote: 'Zero platform deposit fee',
+      confirmationsRequired: 19,
+      explorerTxUrlTemplate: 'https://tronscan.org/#/transaction/{txHash}',
+      enabled: true,
+      settlementEnabled: true,
+      instructions: 'Send only USDT (TRC20)',
+    });
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 1: Non-admin approval attempt returns 403
+    // -------------------------------------------------------------------------
+    const nonAdminApproveRes = await fetch(`${baseUrl}/api/admin/approve-deposit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-regular-user-token',
+      },
+      body: JSON.stringify({
+        userId: advUser,
+        txId: 'TX-ADV-NON-ADMIN',
+      }),
+    });
+    assert.equal(nonAdminApproveRes.status, 403, 'Adversarial Test 1: Non-admin approval attempt must return 403');
+    console.log('  [PASS] Adversarial Test 01: Non-admin approval attempt returns 403');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 2: Spoofed recipientAddress is rejected
+    // -------------------------------------------------------------------------
+    const attackerTronAddress = 'TAttackerSpoofedWalletAddress111111111';
+    const spoofTxHash = '1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff';
+    db.seed(`users/${advUser}/transactions/TX-ADV-SPOOF-RECIP`, {
+      id: 'TX-ADV-SPOOF-RECIP',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 100,
+      amountUSD: 100,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: attackerTronAddress, // Spoofed by client!
+      txHash: spoofTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${spoofTxHash}`, {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: spoofTxHash,
+      network: 'TRC20',
+      tronNetwork: 'mainnet',
+      recipientAddress: attackerTronAddress,
+      expectedTreasuryAddress: attackerTronAddress,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-SPOOF-RECIP',
+      asset: 'USDT',
+      amount: 100,
+      txStatus: 'SUCCESS',
+      confirmations: 25,
+      requiredConfirmations: 19,
+      solidified: true,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-SPOOF-RECIP',
+          admin: adminActor,
+        }),
+      /Spoofed or mismatched recipient address/i,
+      'Adversarial Test 2: Deposit with spoofed recipientAddress must be rejected against paymentMethods/usdt_trc20'
+    );
+    assert.equal(db.peek(`users/${advUser}/wallet/USDT`)?.balance, 200);
+    console.log('  [PASS] Adversarial Test 02: Spoofed recipientAddress is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 3: Disabled payment method is rejected
+    // -------------------------------------------------------------------------
+    db.seed('paymentMethods/usdt_erc20', {
+      id: 'usdt_erc20',
+      symbol: 'USDT',
+      name: 'Tether USD',
+      network: 'ERC20 (Ethereum)',
+      networkCode: 'ERC20',
+      receivingAddress: evmOwnerAddr,
+      memoRequired: false,
+      minDeposit: 20,
+      confirmationsRequired: 12,
+      enabled: false, // Disabled!
+      settlementEnabled: true,
+    });
+    const disabledTxHash = '222233334444555566667777888899990000aaaabbbbccccddddeeeeffff1111';
+    db.seed(`users/${advUser}/transactions/TX-ADV-DISABLED-METHOD`, {
+      id: 'TX-ADV-DISABLED-METHOD',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 50,
+      amountUSD: 50,
+      network: 'ERC20 (Ethereum)',
+      paymentMethodId: 'usdt_erc20',
+      recipientAddress: evmOwnerAddr,
+      txHash: disabledTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${disabledTxHash}`, {
+      verified: true,
+      provider: 'EVM_INDEXER',
+      txHash: disabledTxHash,
+      network: 'ERC20',
+      recipientAddress: evmOwnerAddr,
+      expectedTreasuryAddress: evmOwnerAddr,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-DISABLED-METHOD',
+      asset: 'USDT',
+      amount: 50,
+      txStatus: 'SUCCESS',
+      confirmations: 20,
+      requiredConfirmations: 12,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-DISABLED-METHOD',
+          admin: adminActor,
+        }),
+      /Disabled payment method/i,
+      'Adversarial Test 3: Deposit on disabled payment method must be rejected'
+    );
+    console.log('  [PASS] Adversarial Test 03: Disabled payment method is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 4: Unconfigured payment method is rejected
+    // -------------------------------------------------------------------------
+    db.seed('paymentMethods/usdt_bep20', {
+      id: 'usdt_bep20',
+      symbol: 'USDT',
+      name: 'Tether USD',
+      network: 'BEP20 (BNB Smart Chain)',
+      networkCode: 'BEP20',
+      receivingAddress: '', // Unconfigured!
+      memoRequired: false,
+      minDeposit: 10,
+      confirmationsRequired: 15,
+      enabled: true,
+      settlementEnabled: true,
+    });
+    const unconfTxHash = '33334444555566667777888899990000aaaabbbbccccddddeeeeffff11112222';
+    db.seed(`users/${advUser}/transactions/TX-ADV-UNCONFIGURED-METHOD`, {
+      id: 'TX-ADV-UNCONFIGURED-METHOD',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 50,
+      amountUSD: 50,
+      network: 'BEP20 (BNB Smart Chain)',
+      paymentMethodId: 'usdt_bep20',
+      txHash: unconfTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-UNCONFIGURED-METHOD',
+          admin: adminActor,
+        }),
+      /Unconfigured payment method/i,
+      'Adversarial Test 4: Deposit on unconfigured payment method must be rejected'
+    );
+    console.log('  [PASS] Adversarial Test 04: Unconfigured payment method is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 5: Address rotation is handled safely
+    // -------------------------------------------------------------------------
+    const oldEvmAddr = '0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5';
+    const newEvmAddr = '0x388C818CA8B9251b393131C08a736A67ccB19297';
+    db.seed('paymentMethods/usdt_erc20', {
+      id: 'usdt_erc20',
+      symbol: 'USDT',
+      name: 'Tether USD',
+      network: 'ERC20 (Ethereum)',
+      networkCode: 'ERC20',
+      receivingAddress: newEvmAddr,
+      previousReceivingAddress: oldEvmAddr,
+      addressRotatedAt: new Date().toISOString(),
+      memoRequired: false,
+      minDeposit: 20,
+      confirmationsRequired: 12,
+      enabled: true,
+      settlementEnabled: true,
+    });
+    const rotatedTxHash1 = '4444555566667777888899990000aaaabbbbccccddddeeeeffff111122223333';
+    db.seed(`users/${advUser}/transactions/TX-ADV-ROTATED-UNVERIFIED`, {
+      id: 'TX-ADV-ROTATED-UNVERIFIED',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 40,
+      amountUSD: 40,
+      network: 'ERC20 (Ethereum)',
+      paymentMethodId: 'usdt_erc20',
+      recipientAddress: oldEvmAddr, // Outdated address without authorizedHistoricalRecipient
+      txHash: rotatedTxHash1,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${rotatedTxHash1}`, {
+      verified: true,
+      provider: 'EVM_INDEXER',
+      txHash: rotatedTxHash1,
+      network: 'ERC20',
+      recipientAddress: oldEvmAddr,
+      expectedTreasuryAddress: oldEvmAddr,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-ROTATED-UNVERIFIED',
+      asset: 'USDT',
+      amount: 40,
+      txStatus: 'SUCCESS',
+      confirmations: 15,
+      requiredConfirmations: 12,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-ROTATED-UNVERIFIED',
+          admin: adminActor,
+        }),
+      /Address rotation detected/i,
+      'Adversarial Test 5a: Outdated address deposit without verified historical instructions must be rejected'
+    );
+
+    // Now test with recorded authorizedHistoricalRecipient matching previousReceivingAddress & proof
+    const rotatedTxHash2 = '4444555566667777888899990000aaaabbbbccccddddeeeeffff111122229999';
+    db.seed(`users/${advUser}/transactions/TX-ADV-ROTATED-AUTHORIZED`, {
+      id: 'TX-ADV-ROTATED-AUTHORIZED',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 40,
+      amountUSD: 40,
+      network: 'ERC20 (Ethereum)',
+      paymentMethodId: 'usdt_erc20',
+      recipientAddress: oldEvmAddr,
+      authorizedHistoricalRecipient: oldEvmAddr,
+      txHash: rotatedTxHash2,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${rotatedTxHash2}`, {
+      verified: true,
+      provider: 'EVM_INDEXER',
+      txHash: rotatedTxHash2,
+      network: 'ERC20',
+      recipientAddress: oldEvmAddr,
+      expectedTreasuryAddress: oldEvmAddr,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-ROTATED-AUTHORIZED',
+      asset: 'USDT',
+      amount: 40,
+      txStatus: 'SUCCESS',
+      confirmations: 15,
+      requiredConfirmations: 12,
+    });
+    const rotatedAuthorizedRes = await settleDepositApproval(db, {
+      userId: advUser,
+      txId: 'TX-ADV-ROTATED-AUTHORIZED',
+      admin: adminActor,
+    });
+    assert.equal(rotatedAuthorizedRes.status, 'COMPLETED');
+    assert.equal(db.peek(`users/${advUser}/wallet/USDT`)?.balance, 240);
+    console.log('  [PASS] Adversarial Test 05: Address rotation is handled safely');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 6: Missing or incorrect memo/tag is rejected
+    // -------------------------------------------------------------------------
+    db.seed('paymentMethods/usdt_bep20', {
+      id: 'usdt_bep20',
+      symbol: 'USDT',
+      name: 'Tether USD',
+      network: 'BEP20 (BNB Smart Chain)',
+      networkCode: 'BEP20',
+      receivingAddress: evmOwnerAddr,
+      memoRequired: true,
+      memoValue: 'NEXORA-MEMO-9001',
+      minDeposit: 10,
+      confirmationsRequired: 15,
+      enabled: true,
+      settlementEnabled: true,
+    });
+    const memoTxHash = '555566667777888899990000aaaabbbbccccddddeeeeffff1111222233334444';
+    db.seed(`users/${advUser}/transactions/TX-ADV-WRONG-MEMO`, {
+      id: 'TX-ADV-WRONG-MEMO',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 30,
+      amountUSD: 30,
+      network: 'BEP20 (BNB Smart Chain)',
+      paymentMethodId: 'usdt_bep20',
+      recipientAddress: evmOwnerAddr,
+      memoUsed: 'WRONG-MEMO-000',
+      txHash: memoTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${memoTxHash}`, {
+      verified: true,
+      provider: 'BSC_INDEXER',
+      txHash: memoTxHash,
+      network: 'BEP20',
+      recipientAddress: evmOwnerAddr,
+      expectedTreasuryAddress: evmOwnerAddr,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-WRONG-MEMO',
+      asset: 'USDT',
+      amount: 30,
+      txStatus: 'SUCCESS',
+      confirmations: 20,
+      requiredConfirmations: 15,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-WRONG-MEMO',
+          admin: adminActor,
+        }),
+      /Missing or incorrect Memo\/Destination Tag/i,
+      'Adversarial Test 6: Deposit with missing or wrong memo/destination tag must be rejected'
+    );
+    console.log('  [PASS] Adversarial Test 06: Missing or incorrect memo/tag is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 7: Inflated client amountUSD ($5,000,000) is ignored
+    // -------------------------------------------------------------------------
+    // Configure btc_native with allowNonUsdtSettlementForTesting: true so we can test server-side BTC -> USDT conversion
+    const saveBtcTestModeRes = await fetch(`${baseUrl}/api/admin/payment-methods/btc_native`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: validOwnerBtcAddress,
+        enabled: true,
+        minDeposit: 0.0005,
+        confirmationsRequired: 2,
+        allowNonUsdtSettlementForTesting: true,
+      }),
+    });
+    assert.equal(saveBtcTestModeRes.status, 200);
+
+    const inflatedBtcTxHash = '66667777888899990000aaaabbbbccccddddeeeeffff11112222333344445555';
+    db.seed(`users/${advUser}/transactions/TX-ADV-INFLATED-USD`, {
+      id: 'TX-ADV-INFLATED-USD',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'BTC',
+      amount: 0.0005,
+      amountUSD: 5000000, // Attacker claims 0.0005 BTC is worth $5,000,000!
+      exchangeRateUSD: 10000000000, // Attacker injects fake rate on tx doc!
+      usdtCreditAmount: 5000000, // Attacker injects fake credit on tx doc!
+      network: 'Bitcoin (Native)',
+      paymentMethodId: 'btc_native',
+      recipientAddress: validOwnerBtcAddress,
+      txHash: inflatedBtcTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${inflatedBtcTxHash}`, {
+      verified: true,
+      provider: 'BTC_INDEXER',
+      txHash: inflatedBtcTxHash,
+      network: 'BTC',
+      recipientAddress: validOwnerBtcAddress,
+      expectedTreasuryAddress: validOwnerBtcAddress,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-INFLATED-USD',
+      asset: 'BTC',
+      amount: 0.0005,
+      txStatus: 'SUCCESS',
+      confirmations: 3,
+      requiredConfirmations: 2,
+    });
+
+    // Wire a trusted server exchange-rate quote ($94,250.00 / BTC -> 0.0005 BTC = 47.125 USDT)
+    setExchangeRateProviderForTesting(async (assetSym: string) => ({
+      provider: 'COINGECKO_SERVER_FEED',
+      baseAsset: assetSym,
+      quoteAsset: 'USDT',
+      priceUSD: '94250.00',
+      quotedAt: new Date().toISOString(),
+      validityWindowMs: 300_000,
+      fetchedByServer: true,
+    }));
+
+    const approveInflatedRes = await fetch(`${baseUrl}/api/admin/approve-deposit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        userId: advUser,
+        txId: 'TX-ADV-INFLATED-USD',
+      }),
+    });
+    assert.equal(approveInflatedRes.status, 200);
+    const approveInflatedBody = await approveInflatedRes.json();
+    assert.equal(
+      approveInflatedBody.creditedAmount,
+      47.125,
+      'Adversarial Test 7: Server must credit 47.125 USDT from trusted quote ($94,250 * 0.0005) and completely ignore client amountUSD=$5,000,000'
+    );
+    assert.equal(db.peek(`users/${advUser}/wallet/USDT`)?.balance, 287.125);
+    console.log('  [PASS] Adversarial Test 07: Inflated client amountUSD ($5,000,000) is ignored; BigInt server quote credits exact 47.125 USDT');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 8: Client-supplied exchangeRateUSD or usdtCreditAmount is rejected
+    // -------------------------------------------------------------------------
+    const clientRateHttpRes = await fetch(`${baseUrl}/api/admin/approve-deposit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        userId: advUser,
+        txId: 'TX-ADV-INFLATED-USD',
+        manualVerification: {
+          exchangeRateUSD: 500000,
+          usdtCreditAmount: 250000,
+        },
+      }),
+    });
+    assert.equal(
+      clientRateHttpRes.status,
+      400,
+      'Adversarial Test 8a: HTTP endpoint must reject caller-supplied exchangeRateUSD / usdtCreditAmount with 400'
+    );
+
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-INFLATED-USD',
+          admin: adminActor,
+          manualVerification: {
+            exchangeRateUSD: 500000,
+          },
+        }),
+      /Forbidden conversion override/i,
+      'Adversarial Test 8b: settleDepositApproval must reject caller-supplied exchangeRateUSD'
+    );
+    console.log('  [PASS] Adversarial Test 08: Client-supplied exchangeRateUSD or usdtCreditAmount is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 9: Missing or stale exchange rate quote is rejected
+    // -------------------------------------------------------------------------
+    const staleBtcTxHash = '7777888899990000aaaabbbbccccddddeeeeffff111122223333444455556666';
+    db.seed(`users/${advUser}/transactions/TX-ADV-STALE-QUOTE`, {
+      id: 'TX-ADV-STALE-QUOTE',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'BTC',
+      amount: 0.001,
+      amountUSD: 94.25,
+      network: 'Bitcoin (Native)',
+      paymentMethodId: 'btc_native',
+      recipientAddress: validOwnerBtcAddress,
+      txHash: staleBtcTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${staleBtcTxHash}`, {
+      verified: true,
+      provider: 'BTC_INDEXER',
+      txHash: staleBtcTxHash,
+      network: 'BTC',
+      recipientAddress: validOwnerBtcAddress,
+      expectedTreasuryAddress: validOwnerBtcAddress,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-STALE-QUOTE',
+      asset: 'BTC',
+      amount: 0.001,
+      txStatus: 'SUCCESS',
+      confirmations: 3,
+      requiredConfirmations: 2,
+    });
+
+    // 9a. Missing server rate quote (provider returns null)
+    setExchangeRateProviderForTesting(null);
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-STALE-QUOTE',
+          admin: adminActor,
+          trustedRateQuote: null,
+        }),
+      /Missing trusted server-side exchange[- ]rate quote/i,
+      'Adversarial Test 9a: Missing server rate quote must be rejected without falling back to static rates'
+    );
+
+    // 9b. Stale server rate quote (quoted 20 minutes ago vs 5-minute validityWindowMs)
+    const twentyMinutesAgoIso = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-STALE-QUOTE',
+          admin: adminActor,
+          trustedRateQuote: {
+            provider: 'COINGECKO_SERVER_FEED',
+            baseAsset: 'BTC',
+            quoteAsset: 'USDT',
+            priceUSD: '94250.00',
+            quotedAt: twentyMinutesAgoIso,
+            validityWindowMs: 300_000,
+            fetchedByServer: true,
+          },
+        }),
+      /Stale exchange[- ]rate quote/i,
+      'Adversarial Test 9b: Stale exchange rate quote must be rejected'
+    );
+    assert.equal(
+      db.peek(`users/${advUser}/transactions/TX-ADV-STALE-QUOTE`)?.status,
+      'PENDING_CONFIRMATION',
+      'Deposit must remain PENDING_CONFIRMATION when exchange-rate quote is missing or stale'
+    );
+    console.log('  [PASS] Adversarial Test 09: Missing or stale exchange rate quote is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 10: Insufficient confirmations are rejected
+    // -------------------------------------------------------------------------
+    const lowConfTxHash = '888899990000aaaabbbbccccddddeeeeffff1111222233334444555566667777';
+    db.seed(`users/${advUser}/transactions/TX-ADV-LOW-CONF`, {
+      id: 'TX-ADV-LOW-CONF',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 50,
+      amountUSD: 50,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: lowConfTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${lowConfTxHash}`, {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: lowConfTxHash,
+      network: 'TRC20',
+      tronNetwork: 'mainnet',
+      recipientAddress: validOwnerTrc20Address,
+      expectedTreasuryAddress: validOwnerTrc20Address,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-LOW-CONF',
+      asset: 'USDT',
+      amount: 50,
+      txStatus: 'SUCCESS',
+      confirmations: 5, // Below paymentMethods/usdt_trc20.confirmationsRequired (19)
+      requiredConfirmations: 1, // Even if receipt claims requiredConfirmations=1, paymentMethod requires 19!
+      solidified: true,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-LOW-CONF',
+          admin: adminActor,
+        }),
+      /insufficient (block )?confirmations/i,
+      'Adversarial Test 10: Proof with fewer confirmations than paymentMethod.confirmationsRequired must be rejected'
+    );
+    console.log('  [PASS] Adversarial Test 10: Insufficient confirmations are rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 11: Wrong network (ERC20 vs TRC20) is rejected
+    // -------------------------------------------------------------------------
+    const wrongNetTxHash = '99990000aaaabbbbccccddddeeeeffff11112222333344445555666677778888';
+    db.seed(`users/${advUser}/transactions/TX-ADV-WRONG-NET`, {
+      id: 'TX-ADV-WRONG-NET',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 50,
+      amountUSD: 50,
+      network: 'ERC20 (Ethereum)', // Mismatches paymentMethodId 'usdt_trc20'!
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: wrongNetTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${wrongNetTxHash}`, {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: wrongNetTxHash,
+      network: 'TRC20',
+      tronNetwork: 'mainnet',
+      recipientAddress: validOwnerTrc20Address,
+      expectedTreasuryAddress: validOwnerTrc20Address,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-WRONG-NET',
+      asset: 'USDT',
+      amount: 50,
+      txStatus: 'SUCCESS',
+      confirmations: 25,
+      requiredConfirmations: 19,
+      solidified: true,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-WRONG-NET',
+          admin: adminActor,
+        }),
+      /network mismatch/i,
+      'Adversarial Test 11: Wrong network (ERC20 vs TRC20) must be rejected'
+    );
+    console.log('  [PASS] Adversarial Test 11: Wrong network (ERC20 vs TRC20) is rejected');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 12: Testnet deposit cannot credit production wallet
+    // -------------------------------------------------------------------------
+    const testnetTxHash = 'aaaa0000111122223333444455556666777788889999aaaabbbbccccddddeeee';
+    db.seed(`users/${advUser}/transactions/TX-ADV-TESTNET-BLOCK`, {
+      id: 'TX-ADV-TESTNET-BLOCK',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 75,
+      amountUSD: 75,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: testnetTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${testnetTxHash}`, {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: testnetTxHash,
+      network: 'TRC20',
+      tronNetwork: 'nile', // Testnet!
+      recipientAddress: validOwnerTrc20Address,
+      expectedTreasuryAddress: validOwnerTrc20Address,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-TESTNET-BLOCK',
+      asset: 'USDT',
+      amount: 75,
+      txStatus: 'SUCCESS',
+      confirmations: 30,
+      requiredConfirmations: 19,
+      solidified: true,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-TESTNET-BLOCK',
+          admin: adminActor,
+          allowTestnetCreditForTesting: false,
+        }),
+      /Refusing to credit live Firestore wallet balance from a testnet payment receipt/i,
+      'Adversarial Test 12: Testnet deposit must be blocked from crediting production wallet'
+    );
+    console.log('  [PASS] Adversarial Test 12: Testnet deposit cannot credit production wallet');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 13: Duplicate txHash cannot credit twice
+    // -------------------------------------------------------------------------
+    db.seed(`users/${advUser}/transactions/TX-ADV-DUP-HASH`, {
+      id: 'TX-ADV-DUP-HASH',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 120,
+      amountUSD: 120,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: manualUsdtTxHash, // Already credited in Test 20.6!
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: 'TX-ADV-DUP-HASH',
+          admin: adminActor,
+        }),
+      /Duplicate payment reference/i,
+      'Adversarial Test 13: Replaying an already-credited txHash must be rejected'
+    );
+    console.log('  [PASS] Adversarial Test 13: Duplicate txHash cannot credit twice');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 14: Duplicate approval cannot credit twice
+    // -------------------------------------------------------------------------
+    const concurrentTxHash = 'bbbb1111222233334444555566667777888899990000aaaabbbbccccddddeeee';
+    db.seed(`users/${advUser}/transactions/TX-ADV-CONCURRENT`, {
+      id: 'TX-ADV-CONCURRENT',
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 60,
+      amountUSD: 60,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: concurrentTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    db.seed(`verifiedPayments/txhash_${concurrentTxHash}`, {
+      verified: true,
+      provider: 'TRONGRID_INDEXER',
+      txHash: concurrentTxHash,
+      network: 'TRC20',
+      tronNetwork: 'mainnet',
+      recipientAddress: validOwnerTrc20Address,
+      expectedTreasuryAddress: validOwnerTrc20Address,
+      recipientVerified: true,
+      userId: advUser,
+      txId: 'TX-ADV-CONCURRENT',
+      asset: 'USDT',
+      amount: 60,
+      txStatus: 'SUCCESS',
+      confirmations: 22,
+      requiredConfirmations: 19,
+      solidified: true,
+    });
+    const balanceBeforeConcurrent = db.peek(`users/${advUser}/wallet/USDT`)?.balance;
+    const [concA, concB] = await Promise.all([
+      settleDepositApproval(db, { userId: advUser, txId: 'TX-ADV-CONCURRENT', admin: adminActor }),
+      settleDepositApproval(db, { userId: advUser, txId: 'TX-ADV-CONCURRENT', admin: adminActor }),
+    ]);
+    assert.equal(
+      Number(concA.alreadyProcessed) + Number(concB.alreadyProcessed),
+      1,
+      'Adversarial Test 14: Exactly one concurrent approval must process and the second must return alreadyProcessed: true'
+    );
+    assert.equal(
+      db.peek(`users/${advUser}/wallet/USDT`)?.balance,
+      balanceBeforeConcurrent + 60,
+      'Adversarial Test 14: Concurrent duplicate approval must credit wallet balance exactly once'
+    );
+    console.log('  [PASS] Adversarial Test 14: Duplicate approval cannot credit twice');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 15: Firebase Admin unavailable returns 503 for admin payment method updates
+    // -------------------------------------------------------------------------
+    setFirestoreProviderForTesting(null);
+    const unavailablePutRes = await fetch(`${baseUrl}/api/admin/payment-methods/usdt_trc20`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-admin-token',
+      },
+      body: JSON.stringify({
+        receivingAddress: validOwnerTrc20Address,
+        enabled: true,
+        minDeposit: 10,
+      }),
+    });
+    assert.equal(
+      unavailablePutRes.status,
+      503,
+      'Adversarial Test 15: PUT /api/admin/payment-methods/:methodId must return 503 when Firebase Admin is unavailable'
+    );
+    const unavailablePutBody = await unavailablePutRes.json();
+    assert.equal(unavailablePutBody.code, 'MISSING_ADMIN_CREDENTIALS');
+    // Restore mock Firestore provider
+    setFirestoreProviderForTesting(mockFirestoreFactory);
+    console.log('  [PASS] Adversarial Test 15: Firebase Admin unavailable returns 503 for admin payment method updates');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 16: Cloud Functions, Express, and firestore.rules apply the same admin policy
+    // -------------------------------------------------------------------------
+    const functionsIndexSource = fs.readFileSync('functions/index.ts', 'utf8');
+    const latestRulesSource = fs.readFileSync('firestore.rules', 'utf8');
+
+    // Check Express policy helper across all 3 grant sources + email_verified requirement
+    assert.equal(
+      evaluateAdminAuthorizationPolicy({
+        uid: 'admin_allowlist_uid',
+        email: 'muneebsj7@gmail.com',
+        emailVerified: true,
+        customAdminClaim: false,
+        hasAdminDoc: false,
+      }),
+      true,
+      'Allowlisted verified email must be authorized'
+    );
+    assert.equal(
+      evaluateAdminAuthorizationPolicy({
+        uid: 'admin_unverified_uid',
+        email: 'muneebsj7@gmail.com',
+        emailVerified: false,
+        customAdminClaim: true,
+        hasAdminDoc: true,
+      }),
+      false,
+      'Unverified email must be rejected even with customAdminClaim or admins/{uid} doc'
+    );
+    assert.equal(
+      evaluateAdminAuthorizationPolicy({
+        uid: 'admin_claim_uid',
+        email: 'customclaim@nexoramine.com',
+        emailVerified: true,
+        customAdminClaim: true,
+        hasAdminDoc: false,
+      }),
+      true,
+      'Verified email with admin===true custom claim must be authorized'
+    );
+    assert.equal(
+      evaluateAdminAuthorizationPolicy({
+        uid: 'admin_doc_uid',
+        email: 'docadmin@nexoramine.com',
+        emailVerified: true,
+        customAdminClaim: false,
+        hasAdminDoc: true,
+      }),
+      true,
+      'Verified email with admins/{uid} doc must be authorized'
+    );
+    assert.equal(
+      evaluateAdminAuthorizationPolicy({
+        uid: 'regular_miner_uid',
+        email: 'miner@example.com',
+        emailVerified: true,
+        customAdminClaim: false,
+        hasAdminDoc: false,
+      }),
+      false,
+      'Regular user must be rejected'
+    );
+
+    // Confirm functions/index.ts and firestore.rules enforce the exact same 3 conditions + email_verified === true
+    assert.match(
+      functionsIndexSource,
+      /evaluateCallableAdminAuthorization/,
+      'functions/index.ts must define evaluateCallableAdminAuthorization'
+    );
+    assert.match(
+      functionsIndexSource,
+      /db\.doc\(`admins\/\$\{context\.auth\.uid\}`\)\.get\(\)/,
+      'functions/index.ts requireCallableAdmin must check admins/{uid}'
+    );
+    assert.match(
+      latestRulesSource,
+      /request\.auth\.token\.email_verified == true[\s\S]*?request\.auth\.token\.admin == true[\s\S]*?exists\(\/databases\/\$\(database\)\/documents\/admins\/\$\(request\.auth\.uid\)\)[\s\S]*?request\.auth\.token\.email in \[[\s\S]*?'muneebsj7@gmail\.com'/,
+      'firestore.rules isAdmin() must require email_verified == true and check token.admin == true, admins/{uid}, and allowlist'
+    );
+    console.log('  [PASS] Adversarial Test 16: Cloud Functions, Express, and firestore.rules apply the same admin policy');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 17: Firestore rules reject unauthorized deposit creations and financial writes
+    // -------------------------------------------------------------------------
+    assert.match(
+      latestRulesSource,
+      /function isValidDepositPaymentMethodBinding\(data\)/,
+      'firestore.rules must define isValidDepositPaymentMethodBinding(data)'
+    );
+    assert.match(
+      latestRulesSource,
+      /exists\(\/databases\/\$\(database\)\/documents\/paymentMethods\/\$\(data\.paymentMethodId\)\)/,
+      'firestore.rules must verify paymentMethods/{paymentMethodId} exists on DEPOSIT create'
+    );
+    assert.match(
+      latestRulesSource,
+      /get\(\/databases\/\$\(database\)\/documents\/paymentMethods\/\$\(data\.paymentMethodId\)\)\.data\.enabled == true/,
+      'firestore.rules must verify paymentMethods/{paymentMethodId}.enabled == true on DEPOSIT create'
+    );
+    assert.match(
+      latestRulesSource,
+      /get\(\/databases\/\$\(database\)\/documents\/paymentMethods\/\$\(data\.paymentMethodId\)\)\.data\.settlementEnabled != false/,
+      'firestore.rules must verify paymentMethods/{paymentMethodId}.settlementEnabled != false on DEPOSIT create'
+    );
+    assert.match(
+      latestRulesSource,
+      /data\.recipientAddress == get\(\/databases\/\$\(database\)\/documents\/paymentMethods\/\$\(data\.paymentMethodId\)\)\.data\.receivingAddress/,
+      'firestore.rules must verify deposit recipientAddress matches paymentMethods/{paymentMethodId}.receivingAddress'
+    );
+    assert.match(
+      latestRulesSource,
+      /'exchangeRateUSD'[\s\S]*?'usdtCreditAmount'/,
+      'firestore.rules hasForbiddenSettlementFields must block client exchangeRateUSD and usdtCreditAmount'
+    );
+    console.log('  [PASS] Adversarial Test 17: Firestore rules reject unauthorized deposit creations and financial writes');
+
+    // -------------------------------------------------------------------------
+    // ADVERSARIAL TEST 18: Failed settlement leaves wallet balance and deposit status unchanged
+    // -------------------------------------------------------------------------
+    const balanceBeforeFailedAttempt = db.peek(`users/${advUser}/wallet/USDT`)?.balance;
+    const failedTxId = 'TX-ADV-ATOMIC-UNCHANGED';
+    const failedTxHash = 'cccc222233334444555566667777888899990000aaaabbbbccccddddeeeeffff';
+    db.seed(`users/${advUser}/transactions/${failedTxId}`, {
+      id: failedTxId,
+      userId: advUser,
+      type: 'DEPOSIT',
+      asset: 'USDT',
+      amount: 250,
+      amountUSD: 250,
+      network: 'TRC20 (TRON)',
+      paymentMethodId: 'usdt_trc20',
+      recipientAddress: validOwnerTrc20Address,
+      txHash: failedTxHash,
+      status: 'PENDING_CONFIRMATION',
+      walletCredited: false,
+      walletSettled: false,
+    });
+    // No verifiedPayments receipt exists -> settlement must fail
+    await assert.rejects(
+      () =>
+        settleDepositApproval(db, {
+          userId: advUser,
+          txId: failedTxId,
+          admin: adminActor,
+        }),
+      /Unverified deposit payment/i
+    );
+    const walletAfterFailedAttempt = db.peek(`users/${advUser}/wallet/USDT`);
+    const txAfterFailedAttempt = db.peek(`users/${advUser}/transactions/${failedTxId}`);
+    const settlementAfterFailedAttempt = db.peek(`users/${advUser}/settlements/${failedTxId}`);
+
+    assert.equal(
+      walletAfterFailedAttempt?.balance,
+      balanceBeforeFailedAttempt,
+      'Adversarial Test 18a: Failed settlement must leave wallet balance completely unchanged'
+    );
+    assert.equal(
+      txAfterFailedAttempt?.status,
+      'PENDING_CONFIRMATION',
+      'Adversarial Test 18b: Failed settlement must leave deposit status as PENDING_CONFIRMATION'
+    );
+    assert.equal(
+      txAfterFailedAttempt?.walletCredited,
+      false,
+      'Adversarial Test 18c: Failed settlement must leave walletCredited === false'
+    );
+    assert.equal(
+      settlementAfterFailedAttempt,
+      undefined,
+      'Adversarial Test 18d: Failed settlement must not create a settlements/{txId} document'
+    );
+    console.log('  [PASS] Adversarial Test 18: Failed settlement leaves wallet balance and deposit status unchanged');
+
+    console.log(
+      '✓ Test 21 Passed: All 18 Phase 6.3 Adversarial Security Remediation Tests passed with 100% deterministic enforcement'
+    );
   } finally {
     resetServerTestHooks();
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
   }
 
-  console.log('\nALL 19 SETTLEMENT, TRC20 VERIFIER, REPLAY-PROTECTION, ISOLATION & SECURITY VERIFICATION SUITES PASSED.');
+  console.log('\nALL 21 SETTLEMENT, TRC20 VERIFIER, MANUAL PAYMENT SYSTEM & PHASE 6.3 SECURITY REMEDIATION SUITES PASSED.');
 }
 
 runTests().catch((err) => {

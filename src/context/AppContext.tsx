@@ -60,7 +60,19 @@ interface AppContextType {
   earnTasks: EarnTask[];
   claimDailyReward: (day: number) => Promise<void>;
   claimTaskReward: (taskId: string) => Promise<void> | void;
-  submitDepositRequest: (assetSymbol: string, network: string, amount: number, txHash: string) => Promise<{ success: boolean; message: string }>;
+  submitDepositRequest: (
+    assetSymbol: string,
+    network: string,
+    amount: number,
+    txHash: string,
+    options?: {
+      paymentMethodId?: string;
+      recipientAddress?: string;
+      senderAddress?: string;
+      memoUsed?: string;
+      note?: string;
+    }
+  ) => Promise<{ success: boolean; message: string }>;
   submitWithdrawalRequest: (assetSymbol: string, network: string, amount: number, address: string) => Promise<{ success: boolean; message: string }>;
   refreshWalletState: () => Promise<void>;
   submitPlanOrder: (planIdOrName: string, idempotencyKey?: string) => Promise<{ success: boolean; message: string; contract?: MiningContract }>;
@@ -786,7 +798,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     assetSymbol: string,
     network: string,
     amount: number,
-    txHash: string
+    txHash: string,
+    options?: {
+      paymentMethodId?: string;
+      recipientAddress?: string;
+      senderAddress?: string;
+      memoUsed?: string;
+      note?: string;
+    }
   ): Promise<{ success: boolean; message: string }> => {
     if (!user) {
       openAuthModal('login');
@@ -811,6 +830,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           amount,
           txHash,
           usdRate,
+          paymentMethodId: options?.paymentMethodId,
+          recipientAddress: options?.recipientAddress,
+          senderAddress: options?.senderAddress,
+          memoUsed: options?.memoUsed,
+          note: options?.note,
         });
 
         setTransactions((prev) => {

@@ -24,6 +24,18 @@ import {
   verifyAndRecordTrc20Deposit,
   verifyTronContractAndEndpointsReadOnly,
 } from './src/services/tronGridVerifier.ts';
+import {
+  DEFAULT_PAYMENT_METHODS_CATALOG,
+  type ManualPaymentMethodConfig,
+  type TrustedServerExchangeRateQuote,
+  normalizeNetworkCode,
+  normalizePaymentMethodId,
+  validatePaymentMethodAddress,
+  validateCrossNetworkAddressReuse,
+  sanitizePaymentMethodConfig,
+  mergePaymentMethodsWithCatalog,
+  filterEnabledUserPaymentMethods,
+} from './src/services/paymentMethodService.ts';
 
 dotenv.config();
 
@@ -41,7 +53,7 @@ const PORT = process.env.NODE_ENV === 'production' && process.env.PORT
   ? Number(process.env.PORT)
   : 3000;
 
-const ADMIN_EMAILS = Array.from(
+export const ADMIN_EMAILS = Array.from(
   new Set([
     'muneebsj7@gmail.com',
     'procurement.initialsaudi@gmail.com',
@@ -53,6 +65,29 @@ const ADMIN_EMAILS = Array.from(
       : []),
   ])
 );
+
+/**
+ * Unified server-side admin authorization policy shared across Express routes (`server.ts`),
+ * Cloud Functions (`functions/index.ts`), and mirrored in `firestore.rules`.
+ * Requires authenticated user with `emailVerified === true` AND at least one of:
+ * - Custom token claim `admin === true`
+ * - Server-controlled `admins/{uid}` document existence
+ * - Verified email in `ADMIN_EMAILS`
+ */
+export function evaluateAdminAuthorizationPolicy(input: {
+  uid?: string;
+  email?: string;
+  emailVerified?: boolean;
+  customAdminClaim?: boolean;
+  hasAdminDoc?: boolean;
+}): boolean {
+  if (!input || !input.uid || input.emailVerified !== true) {
+    return false;
+  }
+  const cleanEmail = String(input.email || '').trim().toLowerCase();
+  const isAllowlistedEmail = Boolean(cleanEmail) && ADMIN_EMAILS.includes(cleanEmail);
+  return Boolean(input.customAdminClaim === true || input.hasAdminDoc === true || isAllowlistedEmail);
+}
 
 // Initialize Firebase Admin SDK
 let isFirebaseAdminInitialized = false;
@@ -124,8 +159,10 @@ export interface AuthenticatedCaller {
 }
 
 type TokenVerifierFn = (token: string) => Promise<AuthenticatedCaller | null>;
+type ExchangeRateProviderFn = (assetSymbol: string) => Promise<TrustedServerExchangeRateQuote | null>;
 let customTokenVerifierForTesting: TokenVerifierFn | null = null;
 let customFirestoreProviderForTesting: (() => any) | null = null;
+let customExchangeRateProviderForTesting: ExchangeRateProviderFn | null = null;
 
 export function setTokenVerifierForTesting(fn: TokenVerifierFn | null) {
   customTokenVerifierForTesting = fn;
@@ -135,11 +172,16 @@ export function setFirestoreProviderForTesting(fn: (() => any) | null) {
   customFirestoreProviderForTesting = fn;
 }
 
+export function setExchangeRateProviderForTesting(fn: ExchangeRateProviderFn | null) {
+  customExchangeRateProviderForTesting = fn;
+}
+
 let collectionGroupIndexUnavailable = false;
 
 export function resetServerTestHooks() {
   customTokenVerifierForTesting = null;
   customFirestoreProviderForTesting = null;
+  customExchangeRateProviderForTesting = null;
   collectionGroupIndexUnavailable = false;
 }
 
@@ -154,9 +196,19 @@ function getActiveFirestore(): any {
   return getFirestore();
 }
 
+async function getServerTrustedExchangeRateQuote(
+  assetSymbol: string
+): Promise<TrustedServerExchangeRateQuote | null> {
+  if (customExchangeRateProviderForTesting) {
+    return customExchangeRateProviderForTesting(assetSymbol);
+  }
+  return null;
+}
+
 /**
  * Helper: Verifies a Firebase Bearer ID token via Firebase Admin SDK (primary)
  * or Google Identity Toolkit REST lookup (fallback when service account is not attached).
+ * Both paths enforce `evaluateAdminAuthorizationPolicy`.
  */
 async function verifyFirebaseBearerToken(token: string): Promise<AuthenticatedCaller | null> {
   if (customTokenVerifierForTesting) {
@@ -170,19 +222,26 @@ async function verifyFirebaseBearerToken(token: string): Promise<AuthenticatedCa
       const email = (decoded.email || '').toLowerCase();
       const emailVerified = decoded.email_verified === true;
       const hasCustomAdminClaim = decoded.admin === true;
-      const isAllowlistedAdmin = Boolean(email) && ADMIN_EMAILS.includes(email);
-      let isAdmin = emailVerified && (hasCustomAdminClaim || isAllowlistedAdmin);
+      let hasAdminDoc = false;
 
-      if (emailVerified && !isAdmin) {
+      if (emailVerified && !hasCustomAdminClaim && !ADMIN_EMAILS.includes(email)) {
         try {
           const adminDoc = await getActiveFirestore().doc(`admins/${decoded.uid}`).get();
           if (adminDoc && adminDoc.exists) {
-            isAdmin = true;
+            hasAdminDoc = true;
           }
         } catch {
           // ignore if Firestore lookup fails
         }
       }
+
+      const isAdmin = evaluateAdminAuthorizationPolicy({
+        uid: decoded.uid,
+        email,
+        emailVerified,
+        customAdminClaim: hasCustomAdminClaim,
+        hasAdminDoc,
+      });
 
       return {
         uid: decoded.uid,
@@ -213,7 +272,32 @@ async function verifyFirebaseBearerToken(token: string): Promise<AuthenticatedCa
       if (userObj && userObj.localId) {
         const email = (userObj.email || '').toLowerCase();
         const emailVerified = userObj.emailVerified === true;
-        const isAdmin = Boolean(email) && ADMIN_EMAILS.includes(email) && emailVerified;
+        let customAdminClaim = false;
+        if (typeof userObj.customAttributes === 'string' && userObj.customAttributes) {
+          try {
+            const parsedAttrs = JSON.parse(userObj.customAttributes);
+            customAdminClaim = parsedAttrs?.admin === true;
+          } catch {
+            customAdminClaim = false;
+          }
+        }
+        let hasAdminDoc = false;
+        if (emailVerified && hasActiveFirestoreBackend()) {
+          try {
+            const adminDoc = await getActiveFirestore().doc(`admins/${userObj.localId}`).get();
+            hasAdminDoc = Boolean(adminDoc && adminDoc.exists);
+          } catch {
+            hasAdminDoc = false;
+          }
+        }
+
+        const isAdmin = evaluateAdminAuthorizationPolicy({
+          uid: userObj.localId,
+          email,
+          emailVerified,
+          customAdminClaim,
+          hasAdminDoc,
+        });
 
         return {
           uid: userObj.localId,
@@ -345,8 +429,82 @@ function mapTransactionDoc(docSnap: FirebaseFirestore.QueryDocumentSnapshot | Fi
     taskId: data.taskId,
     rewardSource: data.rewardSource,
     metadataBackfilledFrom: data.metadataBackfilledFrom,
+    paymentMethodId: data.paymentMethodId,
+    recipientAddress: data.recipientAddress,
+    senderAddress: data.senderAddress,
+    memoUsed: data.memoUsed,
+    nativeAsset: data.nativeAsset,
+    nativeAmount: data.nativeAmount,
+    exchangeRateUSD: data.exchangeRateUSD,
     createdAt: data.createdAt,
   };
+}
+
+async function readAllServerPaymentMethods(): Promise<ManualPaymentMethodConfig[]> {
+  const storedDocs: Array<Record<string, any>> = [];
+
+  if (hasActiveFirestoreBackend()) {
+    const db = getActiveFirestore();
+    try {
+      if (typeof db.collection === 'function') {
+        const colRef = db.collection('paymentMethods');
+        if (colRef && typeof colRef.get === 'function') {
+          const snap = await colRef.get();
+          for (const docSnap of snap?.docs || []) {
+            const d = docSnap.data();
+            if (d) storedDocs.push({ id: docSnap.id, ...d });
+          }
+          return mergePaymentMethodsWithCatalog(storedDocs);
+        }
+      }
+    } catch {
+      // Fall back to doc-by-doc read (e.g. InMemoryFirestore in unit tests)
+    }
+
+    if (typeof db.runTransaction === 'function' && typeof db.doc === 'function') {
+      try {
+        await db.runTransaction(async (t: any) => {
+          const snaps = await Promise.all(
+            DEFAULT_PAYMENT_METHODS_CATALOG.map((item) => t.get(db.doc(`paymentMethods/${item.id}`)))
+          );
+          for (const snap of snaps) {
+            if (snap && snap.exists) {
+              const d = snap.data();
+              if (d) storedDocs.push({ id: snap.id, ...d });
+            }
+          }
+        });
+      } catch {
+        // Ignore transaction read fallback errors
+      }
+    }
+  }
+
+  return mergePaymentMethodsWithCatalog(storedDocs);
+}
+
+async function saveServerPaymentMethod(method: ManualPaymentMethodConfig): Promise<void> {
+  if (!hasActiveFirestoreBackend()) {
+    const err: any = new Error(
+      'Firebase Admin SDK is not configured on this server instance. Cannot persist payment method configuration.'
+    );
+    err.code = 'MISSING_ADMIN_CREDENTIALS';
+    throw err;
+  }
+
+  const db = getActiveFirestore();
+  const docRef = db.doc(`paymentMethods/${method.id}`);
+  if (typeof docRef.set === 'function') {
+    await docRef.set(method, { merge: true });
+    return;
+  }
+  if (typeof db.runTransaction === 'function') {
+    await db.runTransaction(async (t: any) => {
+      t.set(docRef, method, { merge: true });
+    });
+    return;
+  }
+  throw new Error('Active Firestore backend does not support document persistence.');
 }
 
 export function isMissingIndexError(err: any): boolean {
@@ -538,6 +696,179 @@ app.get('/api/admin/tron-contract-check', requireAdminAuth, async (_req, res) =>
     res.status(400).json({
       success: false,
       error: err?.message || 'Read-only TRON contract and endpoint verification failed.',
+    });
+  }
+});
+
+/**
+ * GET /api/payment-methods
+ * Public/User endpoint: Returns ONLY enabled manual crypto payment methods that have a
+ * validated, non-empty owner receiving wallet address.
+ */
+app.get('/api/payment-methods', async (_req, res) => {
+  try {
+    const allMethods = await readAllServerPaymentMethods();
+    const enabledMethods = filterEnabledUserPaymentMethods(allMethods);
+    res.json({
+      success: true,
+      configuredCount: enabledMethods.length,
+      paymentMethods: enabledMethods,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load payment methods.',
+    });
+  }
+});
+
+/**
+ * GET /api/admin/payment-methods
+ * Admin endpoint: Returns all payment methods (enabled and disabled) for owner configuration.
+ */
+app.get('/api/admin/payment-methods', requireAdminAuth, async (_req, res) => {
+  try {
+    const allMethods = await readAllServerPaymentMethods();
+    res.json({
+      success: true,
+      paymentMethods: allMethods,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load admin payment methods.',
+    });
+  }
+});
+
+/**
+ * PUT /api/admin/payment-methods/:methodId
+ * Admin endpoint: Updates an owner-configured payment method receiving address, memo, minimum deposit, and enabled state.
+ */
+app.put('/api/admin/payment-methods/:methodId', requireAdminAuth, async (req, res) => {
+  const caller = (req as any).adminCaller as AuthenticatedCaller;
+  const methodId = normalizePaymentMethodId(String(req.params.methodId || ''));
+  if (!methodId) {
+    res.status(400).json({
+      success: false,
+      error: 'Missing or invalid payment method ID.',
+    });
+    return;
+  }
+
+  if (!hasActiveFirestoreBackend()) {
+    res.status(503).json({
+      success: false,
+      error:
+        'Firebase Admin SDK is not configured with service account credentials on this server. ' +
+        'Cannot persist payment method changes.',
+      code: 'MISSING_ADMIN_CREDENTIALS',
+    });
+    return;
+  }
+
+  try {
+    const existingMethods = await readAllServerPaymentMethods();
+    const existing = existingMethods.find((m) => m.id === methodId);
+    const body = req.body || {};
+
+    const resolvedSymbol = String(body.symbol || existing?.symbol || 'USDT').toUpperCase().trim();
+    const networkInput = String(body.networkCode || body.network || existing?.networkCode || 'TRC20');
+    const networkCode = normalizeNetworkCode(networkInput);
+    const rawAddress =
+      body.receivingAddress !== undefined
+        ? String(body.receivingAddress || '').trim()
+        : (existing?.receivingAddress || '');
+    const requestedEnabled =
+      typeof body.enabled === 'boolean' ? body.enabled : Boolean(existing?.enabled);
+    const memoRequired =
+      typeof body.memoRequired === 'boolean' ? body.memoRequired : Boolean(existing?.memoRequired);
+    const memoValue =
+      body.memoValue !== undefined ? String(body.memoValue || '').trim() : (existing?.memoValue || '');
+
+    // Requirement 4: Keep BTC, ETH, SOL, and LTC disabled for real-money settlement until
+    // independent blockchain verification and live exchange-rate feeds are enabled.
+    const isNonUsdtAsset = resolvedSymbol !== 'USDT';
+    const allowNonUsdtForTesting = Boolean(body.allowNonUsdtSettlementForTesting === true);
+    if (isNonUsdtAsset && requestedEnabled && !allowNonUsdtForTesting) {
+      res.status(400).json({
+        success: false,
+        error: `Real-money deposit settlement for ${resolvedSymbol} (${networkCode}) is currently disabled until an independent chain verifier and live server-side exchange-rate feed are active.`,
+        code: 'NON_USDT_SETTLEMENT_DISABLED',
+      });
+      return;
+    }
+
+    if (requestedEnabled && !rawAddress) {
+      res.status(400).json({
+        success: false,
+        error: `Cannot enable payment method '${methodId}' without a valid owner receiving wallet address.`,
+      });
+      return;
+    }
+
+    if (rawAddress) {
+      const addrValidation = validatePaymentMethodAddress(networkCode, rawAddress);
+      if (!addrValidation.valid) {
+        res.status(400).json({
+          success: false,
+          error: addrValidation.error || `Invalid receiving address for ${networkCode}.`,
+        });
+        return;
+      }
+
+      validateCrossNetworkAddressReuse(
+        methodId,
+        networkCode,
+        addrValidation.normalizedAddress,
+        existingMethods,
+        Boolean(body.confirmSharedAddressAcrossNetworks)
+      );
+    }
+
+    if (requestedEnabled && memoRequired && !memoValue) {
+      res.status(400).json({
+        success: false,
+        error: `Cannot enable payment method '${methodId}' when Memo/Tag is required but no Memo/Tag value is configured.`,
+      });
+      return;
+    }
+
+    const settlementEnabled = isNonUsdtAsset ? allowNonUsdtForTesting : true;
+
+    const updatedMethod = sanitizePaymentMethodConfig(
+      {
+        ...(existing || {}),
+        ...body,
+        id: methodId,
+        symbol: resolvedSymbol,
+        networkCode,
+        receivingAddress: rawAddress,
+        memoRequired,
+        memoValue,
+        enabled: requestedEnabled,
+        settlementEnabled,
+        updatedAt: new Date().toISOString(),
+        updatedBy: caller.email || caller.uid,
+      },
+      existing
+    );
+
+    await saveServerPaymentMethod(updatedMethod);
+    const allUpdated = await readAllServerPaymentMethods();
+
+    res.json({
+      success: true,
+      paymentMethod: updatedMethod,
+      paymentMethods: allUpdated,
+      message: updatedMethod.enabled
+        ? `${updatedMethod.symbol} (${updatedMethod.network}) enabled with verified owner address.`
+        : `${updatedMethod.symbol} (${updatedMethod.network}) saved (${updatedMethod.receivingAddress ? 'Disabled' : 'Unconfigured'}).`,
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err?.message || 'Failed to update payment method configuration.',
     });
   }
 });
@@ -859,13 +1190,32 @@ app.post('/api/admin/verify-trc20-deposit', requireAdminAuth, async (req, res) =
  * Atomically approves a deposit, credits user's wallet balance, and updates transaction status.
  */
 app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
-  const { userId, txId, note, allowManualCompletedStatus } = req.body;
+  const { userId, txId, note, allowManualCompletedStatus, manualVerification } = req.body || {};
   const caller = (req as any).adminCaller as AuthenticatedCaller;
 
   if (!userId || !txId) {
     res.status(400).json({
       success: false,
       error: 'Missing required fields: userId and txId must be specified.',
+    });
+    return;
+  }
+
+  // CRITICAL-02 Guard: Reject any request body attempting to supply exchange rates or conversion credits
+  if (
+    req.body?.exchangeRateUSD !== undefined ||
+    req.body?.usdtCreditAmount !== undefined ||
+    req.body?.amountUSD !== undefined ||
+    req.body?.trustedRateQuote !== undefined ||
+    manualVerification?.exchangeRateUSD !== undefined ||
+    manualVerification?.usdtCreditAmount !== undefined ||
+    manualVerification?.amountUSD !== undefined
+  ) {
+    res.status(400).json({
+      success: false,
+      error:
+        'Forbidden conversion override: caller-supplied exchangeRateUSD, usdtCreditAmount, amountUSD, or trustedRateQuote is rejected. Exchange rates must be fetched exclusively by the server.',
+      code: 'FORBIDDEN_CLIENT_EXCHANGE_RATE',
     });
     return;
   }
@@ -883,12 +1233,31 @@ app.post('/api/admin/approve-deposit', requireAdminAuth, async (req, res) => {
 
   try {
     const db = getActiveFirestore();
+    // Look up deposit asset so the server can query its trusted server-side exchange-rate provider if needed
+    let depositAsset = 'USDT';
+    try {
+      const txDocRef = db.doc(`users/${userId}/transactions/${txId}`);
+      if (txDocRef && typeof txDocRef.get === 'function') {
+        const snap = await txDocRef.get();
+        if (snap && snap.exists) {
+          depositAsset = String(snap.data()?.asset || 'USDT').toUpperCase().trim();
+        }
+      }
+    } catch {
+      // settleDepositApproval will read inside its transaction
+    }
+
+    const trustedRateQuote =
+      depositAsset !== 'USDT' ? await getServerTrustedExchangeRateQuote(depositAsset) : null;
+
     const result = await settleDepositApproval(db as any, {
       userId,
       txId,
       admin: { uid: caller.uid, email: caller.email },
       note,
       allowManualCompletedStatus: allowManualCompletedStatus !== undefined ? Boolean(allowManualCompletedStatus) : true,
+      manualVerification: manualVerification || undefined,
+      trustedRateQuote,
       serverTimestamp: () => FieldValue.serverTimestamp(),
     });
 

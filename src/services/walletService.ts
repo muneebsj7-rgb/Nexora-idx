@@ -163,6 +163,11 @@ export interface SubmitDepositParams {
   amount: number;
   txHash: string;
   usdRate: number;
+  paymentMethodId?: string;
+  recipientAddress?: string;
+  senderAddress?: string;
+  memoUsed?: string;
+  note?: string;
 }
 
 export interface SubmitWithdrawalParams {
@@ -441,7 +446,11 @@ export class WalletFirestoreService {
       timestamp: new Date().toISOString(),
       network: params.network,
       txHash: params.txHash.trim(),
-      note: 'Deposit Request Submitted (Pending Verification)',
+      ...(params.paymentMethodId ? { paymentMethodId: params.paymentMethodId.trim() } : {}),
+      ...(params.recipientAddress ? { recipientAddress: params.recipientAddress.trim() } : {}),
+      ...(params.senderAddress ? { senderAddress: params.senderAddress.trim() } : {}),
+      ...(params.memoUsed ? { memoUsed: params.memoUsed.trim() } : {}),
+      note: params.note?.trim() || 'Deposit Request Submitted (Pending Verification)',
       isDemo: false,
     };
 
@@ -458,6 +467,10 @@ export class WalletFirestoreService {
         timestamp: newTx.timestamp,
         network: newTx.network,
         txHash: newTx.txHash,
+        ...(newTx.paymentMethodId ? { paymentMethodId: newTx.paymentMethodId } : {}),
+        ...(newTx.recipientAddress ? { recipientAddress: newTx.recipientAddress } : {}),
+        ...(newTx.senderAddress ? { senderAddress: newTx.senderAddress } : {}),
+        ...(newTx.memoUsed ? { memoUsed: newTx.memoUsed } : {}),
         note: newTx.note,
         createdAt: serverTimestamp(),
       });
@@ -471,13 +484,16 @@ export class WalletFirestoreService {
   /**
    * Submits a pending withdrawal request and atomically reserves funds into `lockedBalance`
    * via the server-side `/api/wallet/withdraw` endpoint (preventing concurrent double-spending).
-   * Falls back to client-side `PENDING_REVIEW` request creation only if server Admin credentials
-   * are not mounted (`MISSING_ADMIN_CREDENTIALS`).
+   * Fails closed if no authenticated Firebase user is active.
    */
   static async submitWithdrawalRequest(
     uid: string,
     params: SubmitWithdrawalParams
   ): Promise<Transaction> {
+    if (!auth?.currentUser) {
+      throw new Error('You must be signed in with a real authenticated account to submit a withdrawal request.');
+    }
+
     if (!db) {
       throw new Error('Firestore is not initialized. Cannot persist withdrawal request.');
     }
@@ -497,11 +513,6 @@ export class WalletFirestoreService {
 
     const cleanSymbol = params.assetSymbol.toUpperCase();
     const netPayoutAmount = Number((params.amount - params.fee).toFixed(8));
-
-    // 1. Primary path: Reserve withdrawal funds into `lockedBalance` via server-side atomic transaction
-    if (!auth?.currentUser) {
-      throw new Error('You must be signed in with a real authenticated account to submit a withdrawal request.');
-    }
 
     const token = await auth.currentUser.getIdToken();
     let resp: Response;
